@@ -1,0 +1,345 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public player profile, progression, and leaderboard statistics (PII isolated).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "avatarId": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "xp": {
+          "type": "integer"
+        },
+        "level": {
+          "type": "integer"
+        },
+        "coins": {
+          "type": "integer"
+        },
+        "wins": {
+          "type": "integer"
+        },
+        "losses": {
+          "type": "integer"
+        },
+        "elo": {
+          "type": "integer"
+        },
+        "streak": {
+          "type": "integer"
+        },
+        "bestStreak": {
+          "type": "integer"
+        },
+        "bossDefeated": {
+          "type": "boolean"
+        },
+        "unlockedAchievements": {
+          "type": "array"
+        },
+        "lastDailyClaim": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "isBanned": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "username",
+        "avatarId",
+        "title",
+        "xp",
+        "level",
+        "coins",
+        "wins",
+        "losses",
+        "elo",
+        "streak",
+        "bestStreak",
+        "bossDefeated",
+        "unlockedAchievements",
+        "lastDailyClaim",
+        "isBanned",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Isolated PII document storing user email and private preferences.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 254
+        },
+        "soundEnabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "soundEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MatchRecord": {
+      "title": "MatchRecord",
+      "description": "Immutable completed match history entry.",
+      "type": "object",
+      "properties": {
+        "matchId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "player1Uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "player1Name": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "player1Fighter": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "player2Name": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "player2Fighter": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "winnerName": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "userWon": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "stage": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "roundsWonP1": {
+          "type": "integer"
+        },
+        "roundsWonP2": {
+          "type": "integer"
+        },
+        "durationSec": {
+          "type": "integer"
+        },
+        "maxCombo": {
+          "type": "integer"
+        },
+        "ahinsaVictory": {
+          "type": "boolean"
+        },
+        "headline": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "matchId",
+        "player1Uid",
+        "player1Name",
+        "player1Fighter",
+        "player2Name",
+        "player2Fighter",
+        "winnerName",
+        "userWon",
+        "mode",
+        "stage",
+        "roundsWonP1",
+        "roundsWonP2",
+        "durationSec",
+        "maxCombo",
+        "ahinsaVictory",
+        "headline",
+        "createdAt"
+      ]
+    },
+    "PlayerReport": {
+      "title": "PlayerReport",
+      "description": "Player moderation or anti-cheat report.",
+      "type": "object",
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "reporterUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "reportedName": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "resolved", "dismissed"],
+          "maxLength": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "reportId",
+        "reporterUid",
+        "reportedName",
+        "reason",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GameConfig": {
+      "title": "GameConfig",
+      "description": "Global live game configuration managed by administrators.",
+      "type": "object",
+      "properties": {
+        "configId": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roundTimeSec": {
+          "type": "integer"
+        },
+        "shaktiGainMultiplier": {
+          "type": "number"
+        },
+        "ahinsaSpeedMultiplier": {
+          "type": "number"
+        },
+        "announcement": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "configId",
+        "roundTimeSec",
+        "shaktiGainMultiplier",
+        "ahinsaSpeedMultiplier",
+        "announcement",
+        "updatedAt"
+      ]
+    },
+    "AdminDoc": {
+      "title": "AdminDoc",
+      "description": "Trusted admin role marker document.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Public player profiles and leaderboard statistics."
+    },
+    "/users_private/{userId}": {
+      "schema": "UserPrivate",
+      "description": "Owner-isolated private user settings and email."
+    },
+    "/matches/{matchId}": {
+      "schema": "MatchRecord",
+      "description": "Verified match history records."
+    },
+    "/reports/{reportId}": {
+      "schema": "PlayerReport",
+      "description": "Moderation and anti-cheat player reports."
+    },
+    "/game_config/{configId}": {
+      "schema": "GameConfig",
+      "description": "Global game balance and announcement config."
+    },
+    "/admins/{adminUid}": {
+      "schema": "AdminDoc",
+      "description": "Trusted administrator lookup documents."
+    }
+  }
+}

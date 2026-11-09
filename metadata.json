@@ -1,0 +1,6 @@
+{
+  "name": "LokSabha Legends: The Great Kursi Showdown",
+  "description": "A 1v1 satirical arcade browser fighting game with combo physics, Shakti super moves, live TV news desk commentary, WebSocket multiplayer rooms, and persistent leaderboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

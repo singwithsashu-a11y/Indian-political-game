@@ -1,0 +1,259 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'Mq5023789@gmail.com'
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'username', 'avatarId', 'title', 'xp', 'level', 'coins',
+        'wins', 'losses', 'elo', 'streak', 'bestStreak', 'bossDefeated',
+        'unlockedAchievements', 'lastDailyClaim', 'isBanned', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'username', 'avatarId', 'title', 'xp', 'level', 'coins',
+        'wins', 'losses', 'elo', 'streak', 'bestStreak', 'bossDefeated',
+        'unlockedAchievements', 'lastDailyClaim', 'isBanned', 'createdAt', 'updatedAt'
+      ]) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.username is string && data.username.size() >= 2 && data.username.size() <= 40 &&
+      data.avatarId is string && data.avatarId.size() >= 1 && data.avatarId.size() <= 32 &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 64 &&
+      data.xp is int && data.xp >= 0 && data.xp <= 10000000 &&
+      data.level is int && data.level >= 1 && data.level <= 500 &&
+      data.coins is int && data.coins >= 0 && data.coins <= 10000000 &&
+      data.wins is int && data.wins >= 0 && data.wins <= 100000 &&
+      data.losses is int && data.losses >= 0 && data.losses <= 100000 &&
+      data.elo is int && data.elo >= 100 && data.elo <= 5000 &&
+      data.streak is int && data.streak >= 0 && data.streak <= 10000 &&
+      data.bestStreak is int && data.bestStreak >= 0 && data.bestStreak <= 10000 &&
+      data.bossDefeated is bool &&
+      data.unlockedAchievements is list && data.unlockedAchievements.size() <= 20 &&
+      (data.unlockedAchievements.size() == 0 || (data.unlockedAchievements[0] is string && data.unlockedAchievements[0].size() <= 64)) &&
+      data.lastDailyClaim is string && data.lastDailyClaim.size() <= 32 &&
+      data.isBanned is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data) {
+      return data.keys().hasAll(['uid', 'email', 'soundEnabled', 'createdAt', 'updatedAt']) &&
+      data.keys().hasOnly(['uid', 'email', 'soundEnabled', 'createdAt', 'updatedAt']) &&
+      data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+      data.soundEnabled is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidMatchRecord(data) {
+      return data.keys().hasAll([
+        'matchId', 'player1Uid', 'player1Name', 'player1Fighter',
+        'player2Name', 'player2Fighter', 'winnerName', 'userWon',
+        'mode', 'stage', 'roundsWonP1', 'roundsWonP2', 'durationSec',
+        'maxCombo', 'ahinsaVictory', 'headline', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'matchId', 'player1Uid', 'player1Name', 'player1Fighter',
+        'player2Name', 'player2Fighter', 'winnerName', 'userWon',
+        'mode', 'stage', 'roundsWonP1', 'roundsWonP2', 'durationSec',
+        'maxCombo', 'ahinsaVictory', 'headline', 'createdAt'
+      ]) &&
+      data.matchId is string && data.matchId.size() >= 1 && data.matchId.size() <= 64 && data.matchId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.player1Uid is string && data.player1Uid == request.auth.uid && data.player1Uid.size() <= 128 && data.player1Uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.player1Name is string && data.player1Name.size() >= 1 && data.player1Name.size() <= 40 &&
+      data.player1Fighter is string && data.player1Fighter.size() >= 1 && data.player1Fighter.size() <= 32 &&
+      data.player2Name is string && data.player2Name.size() >= 1 && data.player2Name.size() <= 40 &&
+      data.player2Fighter is string && data.player2Fighter.size() >= 1 && data.player2Fighter.size() <= 32 &&
+      data.winnerName is string && data.winnerName.size() >= 1 && data.winnerName.size() <= 40 &&
+      data.userWon is bool &&
+      data.mode is string && data.mode.size() >= 1 && data.mode.size() <= 24 &&
+      data.stage is string && data.stage.size() >= 1 && data.stage.size() <= 24 &&
+      data.roundsWonP1 is int && data.roundsWonP1 >= 0 && data.roundsWonP1 <= 3 &&
+      data.roundsWonP2 is int && data.roundsWonP2 >= 0 && data.roundsWonP2 <= 3 &&
+      data.durationSec is int && data.durationSec >= 1 && data.durationSec <= 600 &&
+      data.maxCombo is int && data.maxCombo >= 0 && data.maxCombo <= 99 &&
+      data.ahinsaVictory is bool &&
+      data.headline is string && data.headline.size() >= 1 && data.headline.size() <= 160 &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidPlayerReport(data) {
+      return data.keys().hasAll(['reportId', 'reporterUid', 'reportedName', 'reason', 'status', 'createdAt', 'updatedAt']) &&
+      data.keys().hasOnly(['reportId', 'reporterUid', 'reportedName', 'reason', 'status', 'createdAt', 'updatedAt']) &&
+      data.reportId is string && data.reportId.size() >= 1 && data.reportId.size() <= 64 && data.reportId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128 && data.reporterUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.reportedName is string && data.reportedName.size() >= 1 && data.reportedName.size() <= 40 &&
+      data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 300 &&
+      data.status is string && data.status in ['open', 'resolved', 'dismissed'] && data.status.size() <= 20 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidGameConfig(data) {
+      return data.keys().hasAll(['configId', 'roundTimeSec', 'shaktiGainMultiplier', 'ahinsaSpeedMultiplier', 'announcement', 'updatedAt']) &&
+      data.keys().hasOnly(['configId', 'roundTimeSec', 'shaktiGainMultiplier', 'ahinsaSpeedMultiplier', 'announcement', 'updatedAt']) &&
+      data.configId is string && data.configId.size() >= 1 && data.configId.size() <= 32 && data.configId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.roundTimeSec is int && data.roundTimeSec >= 30 && data.roundTimeSec <= 180 &&
+      data.shaktiGainMultiplier is number && data.shaktiGainMultiplier >= 0.5 && data.shaktiGainMultiplier <= 3.0 &&
+      data.ahinsaSpeedMultiplier is number && data.ahinsaSpeedMultiplier >= 0.5 && data.ahinsaSpeedMultiplier <= 3.0 &&
+      data.announcement is string && data.announcement.size() <= 200 &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidAdminDoc(data) {
+      return data.keys().hasAll(['uid', 'createdAt']) &&
+      data.keys().hasOnly(['uid', 'createdAt']) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.createdAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+    match /users/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if resource.data.isBanned == false || isAdmin();
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().isBanned == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Owner Progression / Profile Update (cannot unban self)
+          (isOwner(userId) &&
+           existing().isBanned == false &&
+           incoming().isBanned == existing().isBanned &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'username', 'avatarId', 'title', 'xp', 'level', 'coins',
+             'wins', 'losses', 'elo', 'streak', 'bestStreak',
+             'bossDefeated', 'unlockedAchievements', 'lastDailyClaim', 'updatedAt'
+           ])) ||
+          // Action 2: Admin Moderation (ban/unban or title adjustment)
+          (isAdmin() &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'isBanned', 'title', 'elo', 'coins', 'updatedAt'
+           ]))
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /users_private/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserPrivate(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserPrivate(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'soundEnabled', 'updatedAt']);
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /matches/{matchId} {
+      allow get: if isValidId(matchId) && isSignedIn() && (resource.data.player1Uid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.player1Uid == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(matchId) &&
+        isValidMatchRecord(incoming()) &&
+        incoming().matchId == matchId &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow update, delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId) && isSignedIn() && (resource.data.reporterUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.reporterUid == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(reportId) &&
+        isValidPlayerReport(incoming()) &&
+        incoming().reportId == reportId &&
+        incoming().reporterUid == request.auth.uid &&
+        incoming().status == 'open' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if isValidId(reportId) &&
+        isValidPlayerReport(incoming()) &&
+        incoming().reportId == existing().reportId &&
+        incoming().reporterUid == existing().reporterUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        existing().status == 'open' &&
+        isAdmin() &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isValidId(reportId) && isAdmin();
+    }
+
+    match /game_config/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if false;
+      allow create: if isValidId(configId) &&
+        isValidGameConfig(incoming()) &&
+        incoming().configId == configId &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+      allow update: if isValidId(configId) &&
+        isValidGameConfig(incoming()) &&
+        incoming().configId == existing().configId &&
+        incoming().updatedAt == request.time &&
+        isAdmin() &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'roundTimeSec', 'shaktiGainMultiplier', 'ahinsaSpeedMultiplier', 'announcement', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(adminUid) &&
+        isValidAdminDoc(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+      allow update, delete: if false;
+    }
+  }
+}
