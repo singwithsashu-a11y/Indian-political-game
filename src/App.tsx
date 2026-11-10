@@ -11,6 +11,7 @@ import { FighterAvatar } from './components/FighterAvatar';
 import { NewspaperResult } from './components/NewspaperResult';
 import { DocsAndTestsModal } from './components/DocsAndTestsModal';
 import { AdminDashboardModal } from './components/AdminDashboardModal';
+import { CharacterModelSheetStudio } from './components/CharacterModelSheetStudio';
 import { sound } from './game/sound';
 import {
   auth,
@@ -36,7 +37,14 @@ import {
 } from './lib/firebase';
 import { User } from 'firebase/auth';
 
-type ScreenView = 'SELECT' | 'MULTIPLAYER' | 'PLAYING' | 'RESULT' | 'LEADERBOARD' | 'PROFILE';
+type ScreenView =
+  | 'MODELSHEET'
+  | 'SELECT'
+  | 'MULTIPLAYER'
+  | 'PLAYING'
+  | 'RESULT'
+  | 'LEADERBOARD'
+  | 'PROFILE';
 
 const DEFAULT_GUEST_PROFILE: PlayerProfileData = {
   uid: 'guest_local',
@@ -58,17 +66,20 @@ const DEFAULT_GUEST_PROFILE: PlayerProfileData = {
 };
 
 export default function App() {
-  // Legal Satire Disclaimer Gate (`#legal` from fightkaro.com)
-  const [legalAccepted, setLegalAccepted] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('loksabha-legends:legal-v1') === '1';
-    } catch {
-      return false;
-    }
-  });
+  // Legal Satire Disclaimer Gate (non-blocking on initial load)
+  const [legalAccepted, setLegalAccepted] = useState<boolean>(true);
 
-  // Main Screen & Modal Navigation
-  const [view, setView] = useState<ScreenView>('SELECT');
+  // Main Screen & Modal Navigation (Defaults to 3D Character Model Sheet Studio, or PLAYING when ?autostart=1)
+  const [view, setView] = useState<ScreenView>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('autostart') === '1') return 'PLAYING';
+      if (params.get('view') === 'select') return 'SELECT';
+    } catch {
+      // ignore
+    }
+    return 'MODELSHEET';
+  });
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
 
@@ -224,6 +235,18 @@ export default function App() {
       ws.close();
     };
   }, []);
+
+  // Sync state attribute on body for verification tooling
+  useEffect(() => {
+    document.body.dataset.state =
+      view === 'PLAYING'
+        ? 'playing'
+        : view === 'RESULT'
+        ? 'gameover'
+        : view === 'MODELSHEET'
+        ? 'modelsheet'
+        : 'title';
+  }, [view]);
 
   // Load Leaderboard & Match History when opening those views
   useEffect(() => {
@@ -499,13 +522,19 @@ export default function App() {
   const isAdminUser = Boolean(fbUser?.email === OWNER_ADMIN_EMAIL);
 
   return (
-    <div className="min-h-screen bg-[#120A06] text-[#F8FAFC] flex flex-col">
+    <div
+      className={`min-h-screen flex flex-col ${
+        view === 'MODELSHEET'
+          ? 'bg-[#E5E7EB] text-[#0F172A]'
+          : 'bg-[#120A06] text-[#F8FAFC]'
+      }`}
+    >
       {/* Strict 3-Zone Top Bar Contract */}
-      <header className="h-16 flex items-center justify-between gap-8 px-6 border-b border-white/10 bg-[#120A06]/95 backdrop-blur-md sticky top-0 z-30">
+      <header className="h-16 flex items-center justify-between gap-8 px-6 border-b border-white/10 bg-[#120A06] text-[#F8FAFC] sticky top-0 z-30">
         {/* Zone 1: Single text element wordmark */}
         <button
           type="button"
-          onClick={() => setView('SELECT')}
+          onClick={() => setView('MODELSHEET')}
           className="font-display text-2xl font-bold tracking-wider text-[#FF9933] whitespace-nowrap shrink-0 cursor-pointer"
         >
           LOKSABHA LEGENDS
@@ -513,6 +542,15 @@ export default function App() {
 
         {/* Zone 2: 5 Single-Line Navigation Links */}
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
+          <button
+            type="button"
+            onClick={() => setView('MODELSHEET')}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              view === 'MODELSHEET' ? 'text-[#FF9933] underline underline-offset-8' : ''
+            }`}
+          >
+            3D Model Sheet
+          </button>
           <button
             type="button"
             onClick={() => setView('SELECT')}
@@ -549,18 +587,20 @@ export default function App() {
           >
             Player Profile
           </button>
-          <button
-            type="button"
-            onClick={() => setShowDocsModal(true)}
-            className="hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Docs & QA Suite
-          </button>
         </nav>
 
         {/* Zone 3: 1 Primary Action Button */}
         <div className="flex items-center shrink-0">
-          {fbUser ? (
+          {view === 'MODELSHEET' ? (
+            <button
+              type="button"
+              data-start="true"
+              onClick={() => setView('SELECT')}
+              className="px-4 py-2 text-xs font-semibold bg-[#FF9933] hover:bg-amber-400 text-[#120A06] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Launch Fight Arena
+            </button>
+          ) : fbUser ? (
             <button
               type="button"
               onClick={() => setShowAdminModal(true)}
@@ -585,6 +625,19 @@ export default function App() {
         <div className="fixed bottom-5 right-5 z-50 bg-[#1E1612] border border-[#FF9933] text-white px-4 py-3 rounded-xl shadow-2xl text-xs font-mono max-w-md">
           {toastMessage}
         </div>
+      )}
+
+      {/* VIEW 0: AAA 3D GAME CHARACTER MODEL SHEET STUDIO */}
+      {view === 'MODELSHEET' && (
+        <CharacterModelSheetStudio
+          onSelectFighterForArena={(fId) => {
+            const found = FIGHTERS.find((f) => f.id === fId);
+            if (found) {
+              setP1Fighter(found);
+            }
+            setView('SELECT');
+          }}
+        />
       )}
 
       {/* VIEW 1: CHARACTER SELECT & MAIN HUB (`#select`) */}
