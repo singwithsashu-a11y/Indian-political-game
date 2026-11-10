@@ -629,15 +629,18 @@ export default function App() {
 
       {/* VIEW 0: AAA 3D GAME CHARACTER MODEL SHEET STUDIO */}
       {view === 'MODELSHEET' && (
-        <CharacterModelSheetStudio
-          onSelectFighterForArena={(fId) => {
-            const found = FIGHTERS.find((f) => f.id === fId);
-            if (found) {
-              setP1Fighter(found);
-            }
-            setView('SELECT');
-          }}
-        />
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-6">
+          <CharacterModelSheetStudio
+            onSelectFighterForMatch={(fId) => {
+              const found = FIGHTERS.find((f) => f.id === fId);
+              if (found) {
+                setP1Fighter(found);
+                sound.playCharacterSuperVoice(found.id);
+              }
+              setView('SELECT');
+            }}
+          />
+        </main>
       )}
 
       {/* VIEW 1: CHARACTER SELECT & MAIN HUB (`#select`) */}

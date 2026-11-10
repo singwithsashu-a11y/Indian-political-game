@@ -1,1417 +1,1359 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
+  ALL_FIGHTKARO_CHARACTER_SPECS,
   CHARACTER_MODEL_SHEETS,
-  MANDATORY_TEN_VIEWS,
-  MASTER_TRIO_SHEET_URL,
   CharacterModelSheetSpec,
+  FIGHTKARO_ROSTER_ENTRIES,
+  MANDATORY_TEN_VIEWS,
+  MBAPU_BOSS_STATS_TABLE,
+  ModelSheetViewId,
   OrthographicViewSpec,
   StudioMaterialMode,
+  validateModelSheetConsistency,
 } from '../game/modelSheetSpec';
+import {
+  loadFightKaroGlb,
+  renderTenViewsForGlb,
+} from '../game/glbStudioRenderer';
+import {
+  POLITICAL_SCENE_AUDIO_CATALOG,
+  PoliticalAudioSceneItem,
+  sound,
+} from '../game/sound';
+import {
+  Box,
+  CheckCircle2,
+  Eye,
+  Filter,
+  Layers,
+  Maximize2,
+  Music,
+  Play,
+  RotateCcw,
+  ShieldAlert,
+  Sparkles,
+  Swords,
+  Users,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 
-interface CharacterModelSheetStudioProps {
-  onSelectFighterForArena: (fighterId: string) => void;
+interface LiveGlbTurntableProps {
+  glbUrl: string;
+  materialMode: StudioMaterialMode;
+  initialYawDeg?: number;
+  initialClip?: string;
 }
 
-/**
- * Renders a mathematically locked, perspective-free orthographic 3D shaded character sculpt
- * in a normalized 300x380 logical coordinate space on a neutral light grey (#E5E7EB) studio
- * cyclorama background so proportions remain 100% identical at any viewport size without cropping.
- */
-const OrthographicSculptCanvas: React.FC<{
-  character: CharacterModelSheetSpec;
-  view: OrthographicViewSpec;
-  materialMode: StudioMaterialMode;
-  showGrid: boolean;
-  customYaw?: number;
-  width?: number;
-  height?: number;
-}> = ({
-  character,
-  view,
+const LiveGlbTurntable: React.FC<LiveGlbTurntableProps> = ({
+  glbUrl,
   materialMode,
-  showGrid,
-  customYaw,
-  width = 240,
-  height = 304,
+  initialYawDeg = 25,
+  initialClip = 'guardbounce',
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const [animNames, setAnimNames] = useState<string[]>([]);
+  const [activeClip, setActiveClip] = useState<string>(initialClip);
+  const [yawDeg, setYawDeg] = useState<number>(initialYawDeg);
+  const [autoRotate, setAutoRotate] = useState<boolean>(true);
+  const [headCloseup, setHeadCloseup] = useState<boolean>(false);
+  const [triCount, setTriCount] = useState<number>(0);
+
+  const stateRef = useRef({
+    yawDeg: initialYawDeg,
+    autoRotate: true,
+    headCloseup: false,
+    activeClip: initialClip,
+    materialMode,
+  });
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    setActiveClip(initialClip);
+    stateRef.current.activeClip = initialClip;
+  }, [initialClip]);
 
-    // Logical reference coordinate system (300 x 380) prevents any aspect or height squishing
-    const LOGICAL_W = 300;
-    const LOGICAL_H = 380;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
+  useEffect(() => {
+    stateRef.current.yawDeg = yawDeg;
+    stateRef.current.autoRotate = autoRotate;
+    stateRef.current.headCloseup = headCloseup;
+    stateRef.current.activeClip = activeClip;
+    stateRef.current.materialMode = materialMode;
+  }, [yawDeg, autoRotate, headCloseup, activeClip, materialMode]);
 
-    ctx.save();
-    ctx.scale((width * dpr) / LOGICAL_W, (height * dpr) / LOGICAL_H);
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
 
-    // 1. Neutral Light Grey Studio Cyclorama Background (#E5E7EB -> #D5D9E0)
-    const bgGrad = ctx.createRadialGradient(
-      LOGICAL_W * 0.5,
-      LOGICAL_H * 0.42,
-      24,
-      LOGICAL_W * 0.5,
-      LOGICAL_H * 0.5,
-      LOGICAL_W * 0.8
+    let disposed = false;
+    let rafId = 0;
+
+    const width = container.clientWidth || 420;
+    const height = container.clientHeight || 360;
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+    });
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.12;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setSize(width, height);
+    container.innerHTML = '';
+    container.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xe5e7eb);
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const key = new THREE.DirectionalLight(0xfffbeb, 1.8);
+    key.position.set(2.5, 4.2, 3.8);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xe0f2fe, 0.95);
+    fill.position.set(-3.0, 2.2, 2.5);
+    scene.add(fill);
+
+    const ped = new THREE.Mesh(
+      new THREE.CircleGeometry(0.68, 48),
+      new THREE.MeshBasicMaterial({ color: 0xcbd5e1 })
     );
-    bgGrad.addColorStop(0, '#F3F4F6');
-    bgGrad.addColorStop(0.68, '#E5E7EB');
-    bgGrad.addColorStop(1, '#D5D9E0');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+    ped.rotation.x = -Math.PI / 2;
+    scene.add(ped);
 
-    // 2. Optional Orthographic 4.5-Head Proportion Measurement Grid
-    if (showGrid) {
-      ctx.strokeStyle = 'rgba(100, 116, 139, 0.24)';
-      ctx.lineWidth = 1;
-      // Vertical symmetry axis
-      ctx.beginPath();
-      ctx.setLineDash([4, 4]);
-      ctx.moveTo(LOGICAL_W / 2, 16);
-      ctx.lineTo(LOGICAL_W / 2, LOGICAL_H - 16);
-      ctx.stroke();
-      ctx.setLineDash([]);
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 50);
+    let modelGroup: THREE.Object3D | null = null;
+    let mixer: THREE.AnimationMixer | null = null;
+    let clips: THREE.AnimationClip[] = [];
+    let currentPlayingClip = '';
+    let charBox = new THREE.Box3();
 
-      if (view.cameraType === 'orthographic_full_body') {
-        const topY = 38;
-        const bottomY = LOGICAL_H - 34;
-        const totalH = bottomY - topY;
-        const heads = 4.5;
-        for (let i = 0; i <= 4; i++) {
-          const y = topY + (totalH / heads) * i;
-          ctx.beginPath();
-          ctx.moveTo(22, y);
-          ctx.lineTo(LOGICAL_W - 22, y);
-          ctx.stroke();
+    loadFightKaroGlb(glbUrl)
+      .then((asset) => {
+        if (disposed) return;
+        const cloned = SkeletonUtils.clone(asset.gltf.scene);
+        modelGroup = cloned;
+        scene.add(cloned);
+        clips = asset.animations;
+        const names = clips.map((c) => c.name);
+        setAnimNames(names);
+        setTriCount(asset.triangleCount);
+
+        mixer = new THREE.AnimationMixer(cloned);
+        const defaultClip =
+          clips.find((c) => c.name === stateRef.current.activeClip) ||
+          clips.find((c) => c.name === 'guardbounce') ||
+          clips[0];
+        if (defaultClip) {
+          currentPlayingClip = defaultClip.name;
+          setActiveClip(defaultClip.name);
+          mixer.clipAction(defaultClip).play();
         }
-        // Floor datum line
-        ctx.strokeStyle = 'rgba(71, 85, 105, 0.45)';
-        ctx.beginPath();
-        ctx.moveTo(18, bottomY);
-        ctx.lineTo(LOGICAL_W - 18, bottomY);
-        ctx.stroke();
-      } else {
-        // Head close-up eye-line & nose-base datum planes
-        for (const frac of [0.42, 0.56, 0.7]) {
-          ctx.beginPath();
-          ctx.moveTo(24, LOGICAL_H * frac);
-          ctx.lineTo(LOGICAL_W - 24, LOGICAL_H * frac);
-          ctx.stroke();
-        }
-      }
-    }
 
-    const isClay = materialMode === 'zbrush_clay';
-    const isWire = materialMode === 'wireframe_topo';
+        cloned.updateMatrixWorld(true);
+        charBox = new THREE.Box3().setFromObject(cloned);
+        const center = new THREE.Vector3();
+        charBox.getCenter(center);
+        ped.position.set(center.x, charBox.min.y + 0.002, center.z);
+      })
+      .catch(() => {});
 
-    const col = (hex: string, clayFallback = '#C8BEB7') => {
-      if (isClay) return clayFallback;
-      if (isWire) return '#DCE0E6';
-      return hex;
-    };
+    let lastTime = performance.now();
 
-    const fill3DVolume = (
-      cx: number,
-      cy: number,
-      rx: number,
-      ry: number,
-      baseColor: string,
-      clayShade = '#C8BEB7',
-      strokeEdge = true
-    ) => {
-      const c = col(baseColor, clayShade);
-      const grad = ctx.createRadialGradient(
-        cx - rx * 0.3,
-        cy - ry * 0.3,
-        Math.max(2, rx * 0.1),
-        cx,
-        cy,
-        Math.max(rx, ry) * 1.15
-      );
-      grad.addColorStop(0, lightenHex(c, 26));
-      grad.addColorStop(0.55, c);
-      grad.addColorStop(1, darkenHex(c, 30));
-      ctx.fillStyle = grad;
-      ctx.fill();
+    const tick = () => {
+      if (disposed) return;
+      const now = performance.now();
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
 
-      if (strokeEdge) {
-        ctx.strokeStyle = isWire ? '#0F172A' : darkenHex(c, 42);
-        ctx.lineWidth = isWire ? 1.3 : 1.15;
-        ctx.stroke();
-      }
-    };
-
-    const yaw = (((customYaw ?? view.yawDegrees) % 360) + 360) % 360;
-    const isBack = yaw > 125 && yaw < 235;
-    const isSide = (yaw >= 65 && yaw <= 125) || (yaw >= 235 && yaw <= 295);
-    const sideDir = yaw >= 235 ? -1 : 1;
-    const yawRad = (yaw * Math.PI) / 180;
-    const horizOffset = isSide ? sideDir * 7 : Math.sin(yawRad) * 10;
-
-    const { proportions, palette, fighterId } = character;
-
-    if (view.cameraType === 'orthographic_head_closeup') {
-      // ========================================================================
-      // ORTHOGRAPHIC 3D FACIAL EXPRESSION SCULPT CLOSE-UP (Views 08, 09, 10)
-      // Perfectly centered in 300x380 logical space with >=18% margin around head
-      // ========================================================================
-      const cx = LOGICAL_W * 0.5;
-      const cy = LOGICAL_H * 0.45;
-      const headRx = 58 * proportions.headWidthFactor;
-      const headRy = 66;
-
-      // Studio ground shadow disc
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.14)';
-      ctx.beginPath();
-      ctx.ellipse(cx, LOGICAL_H - 30, 62, 10, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Neck & Collar Bust Pedestal
-      ctx.beginPath();
-      ctx.roundRect(cx - 32, cy + 46, 64, 48, 16);
-      fill3DVolume(cx, cy + 66, 34, 26, palette.skinBase, '#BCACA3');
-
-      ctx.beginPath();
-      ctx.moveTo(cx - 70, cy + 96);
-      ctx.quadraticCurveTo(cx, cy + 68, cx + 70, cy + 96);
-      ctx.lineTo(cx + 80, cy + 128);
-      ctx.lineTo(cx - 80, cy + 128);
-      ctx.closePath();
-      fill3DVolume(cx, cy + 104, 76, 26, palette.topGarmentPrimary, '#A89F99');
-
-      // Ears
-      for (const side of [-1, 1]) {
-        ctx.beginPath();
-        ctx.ellipse(cx + side * (headRx + 4), cy + 4, 11, 21, side * 0.12, 0, Math.PI * 2);
-        fill3DVolume(cx + side * (headRx + 4), cy + 4, 11, 21, palette.skinBase);
-      }
-
-      // Character 03 Iconic White Side Hair Wings
-      if (fighterId === 'lalu') {
-        for (const side of [-1, 1]) {
-          ctx.beginPath();
-          ctx.moveTo(cx + side * (headRx - 10), cy - 18);
-          ctx.quadraticCurveTo(
-            cx + side * (headRx + 32),
-            cy - 44,
-            cx + side * (headRx + 24),
-            cy + 10
+      if (modelGroup && mixer) {
+        if (
+          stateRef.current.activeClip &&
+          stateRef.current.activeClip !== currentPlayingClip
+        ) {
+          const nextClip = clips.find(
+            (c) => c.name === stateRef.current.activeClip
           );
-          ctx.closePath();
-          fill3DVolume(cx + side * (headRx + 14), cy - 14, 24, 24, palette.hairPrimary, '#D6CEC7');
-        }
-      }
-
-      // Main Cranium & Jaw Sculpt
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, headRx, headRy, 0, 0, Math.PI * 2);
-      fill3DVolume(cx, cy, headRx, headRy, palette.skinBase);
-
-      // Character 03 Double Chin Volume
-      if (fighterId === 'lalu') {
-        ctx.beginPath();
-        ctx.ellipse(cx, cy + headRy - 6, headRx * 0.72, 18, 0, 0, Math.PI);
-        fill3DVolume(cx, cy + headRy - 6, headRx * 0.72, 18, palette.skinBase);
-      }
-
-      // Hair Sculpt on Top
-      if (fighterId === 'vikas') {
-        ctx.beginPath();
-        ctx.ellipse(cx, cy - headRy * 0.66, headRx * 0.96, 28, 0, Math.PI, Math.PI * 2);
-        fill3DVolume(cx, cy - headRy * 0.7, headRx, 28, palette.hairPrimary, '#D8D0C8');
-      } else if (fighterId === 'yatra') {
-        ctx.beginPath();
-        ctx.ellipse(cx, cy - headRy * 0.65, headRx * 1.08, 34, 0, Math.PI * 0.92, Math.PI * 2.08);
-        fill3DVolume(cx, cy - headRy * 0.68, headRx * 1.08, 34, palette.hairPrimary, '#8C827A');
-
-        // Royal blue sweatband
-        ctx.beginPath();
-        ctx.roundRect(cx - headRx * 0.96, cy - 44, headRx * 1.92, 15, 6);
-        fill3DVolume(cx, cy - 36, headRx, 10, palette.accessoryAccent, '#9E948C');
-      }
-
-      // Facial Hair / Beard Sculpt
-      if (fighterId === 'vikas') {
-        ctx.beginPath();
-        ctx.moveTo(cx - headRx * 0.92, cy + 6);
-        ctx.quadraticCurveTo(cx - headRx * 0.85, cy + headRy + 22, cx, cy + headRy + 24);
-        ctx.quadraticCurveTo(cx + headRx * 0.85, cy + headRy + 22, cx + headRx * 0.92, cy + 6);
-        ctx.quadraticCurveTo(cx, cy + 24, cx - headRx * 0.92, cy + 6);
-        ctx.closePath();
-        fill3DVolume(cx, cy + 44, headRx * 0.9, 36, palette.hairPrimary, '#D8D0C8');
-      } else if (fighterId === 'yatra') {
-        ctx.beginPath();
-        ctx.ellipse(cx, cy + 26, headRx * 0.86, 36, 0, 0.15, Math.PI - 0.15);
-        fill3DVolume(cx, cy + 36, headRx * 0.85, 30, palette.hairPrimary, '#8C827A');
-      }
-
-      // Eyes & Expression Geometry
-      const expr = view.expressionKey;
-      const eyeY = cy - 8;
-      const eyeOffsetX = 23;
-
-      for (const side of [-1, 1]) {
-        const ex = cx + side * eyeOffsetX;
-        if (expr === 'laughing') {
-          ctx.strokeStyle = '#1E293B';
-          ctx.lineWidth = 3.4;
-          ctx.beginPath();
-          ctx.arc(ex, eyeY + 3, 10.5, Math.PI * 1.1, Math.PI * 1.9);
-          ctx.stroke();
-        } else {
-          const eyeRy = expr === 'shocked' ? 12 : 8.2;
-          ctx.fillStyle = isClay ? '#DFD9D4' : '#FFFFFF';
-          ctx.beginPath();
-          ctx.ellipse(ex, eyeY, 11.5, eyeRy, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = '#334155';
-          ctx.lineWidth = 1.4;
-          ctx.stroke();
-
-          const irisR = expr === 'shocked' ? 4.2 : 5.4;
-          ctx.fillStyle = isClay ? '#8C827A' : '#1E293B';
-          ctx.beginPath();
-          ctx.arc(ex, eyeY, irisR, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.fillStyle = '#FFFFFF';
-          ctx.beginPath();
-          ctx.arc(ex - 2, eyeY - 2, 1.9, 0, Math.PI * 2);
-          ctx.fill();
+          if (nextClip) {
+            mixer.stopAllAction();
+            mixer.clipAction(nextClip).reset().play();
+            currentPlayingClip = nextClip.name;
+          }
         }
 
-        // Eyebrows
-        ctx.strokeStyle =
-          fighterId === 'yatra' ? col('#1E1B18', '#6E655F') : col('#F8FAFC', '#D8D0C8');
-        ctx.lineWidth = 5.2;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        if (expr === 'angry') {
-          ctx.moveTo(ex - side * 12, eyeY - 11);
-          ctx.lineTo(ex + side * 13, eyeY - 19);
-        } else if (expr === 'shocked') {
-          ctx.arc(ex, eyeY - 15, 13, Math.PI * 1.15, Math.PI * 1.85);
-        } else {
-          ctx.arc(ex, eyeY - 9, 13, Math.PI * 1.15, Math.PI * 1.85);
+        mixer.update(dt);
+
+        if (stateRef.current.autoRotate) {
+          stateRef.current.yawDeg = (stateRef.current.yawDeg + dt * 32) % 360;
         }
-        ctx.stroke();
-      }
+        modelGroup.rotation.y = THREE.MathUtils.degToRad(
+          stateRef.current.yawDeg
+        );
 
-      // Character 01 Gold-Rimmed Spectacles
-      if (fighterId === 'vikas') {
-        ctx.strokeStyle = col('#D97706', '#8E847C');
-        ctx.lineWidth = 2.6;
-        for (const side of [-1, 1]) {
-          ctx.beginPath();
-          ctx.roundRect(cx + side * 23 - 16, eyeY - 12, 32, 22, 6);
-          ctx.stroke();
+        const size = new THREE.Vector3();
+        const center = new THREE.Vector3();
+        charBox.getSize(size);
+        charBox.getCenter(center);
+
+        const cW = container.clientWidth || 420;
+        const cH = container.clientHeight || 360;
+        const aspect = cW / cH;
+
+        let targetY = center.y;
+        let halfH = Math.max(size.y * 0.64, 0.9);
+        if (stateRef.current.headCloseup) {
+          targetY = charBox.max.y - size.y * 0.14;
+          halfH = Math.max(size.y * 0.19, 0.25);
         }
-        ctx.beginPath();
-        ctx.moveTo(cx - 7, eyeY - 2);
-        ctx.lineTo(cx + 7, eyeY - 2);
-        ctx.stroke();
+
+        camera.left = -halfH * aspect;
+        camera.right = halfH * aspect;
+        camera.top = halfH;
+        camera.bottom = -halfH;
+        camera.position.set(center.x, targetY, center.z + 6);
+        camera.lookAt(center.x, targetY, center.z);
+        camera.updateProjectionMatrix();
       }
 
-      // 3D Sculpted Nose
-      ctx.beginPath();
-      const noseW = fighterId === 'lalu' ? 14 : 10;
-      ctx.moveTo(cx, eyeY - 2);
-      ctx.lineTo(cx - noseW, cy + 14);
-      ctx.quadraticCurveTo(cx, cy + 20, cx + noseW, cy + 14);
-      ctx.closePath();
-      fill3DVolume(cx, cy + 9, noseW, 12, palette.skinBase);
-
-      // Mouth Sculpt per Expression
-      const mouthY = cy + 34;
-      if (expr === 'angry') {
-        ctx.fillStyle = isClay ? '#7C726B' : '#450A0A';
-        ctx.beginPath();
-        ctx.roundRect(cx - 22, mouthY - 8, 44, 18, 6);
-        ctx.fill();
-        ctx.strokeStyle = '#1E293B';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.fillStyle = isClay ? '#DFD8D2' : '#F8FAFC';
-        ctx.fillRect(cx - 18, mouthY - 6, 36, 6);
-        ctx.fillRect(cx - 18, mouthY + 2, 36, 5);
-      } else if (expr === 'laughing') {
-        ctx.fillStyle = isClay ? '#7C726B' : '#7F1D1D';
-        ctx.beginPath();
-        ctx.arc(cx, mouthY - 6, 26, 0, Math.PI);
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = '#1E293B';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.fillStyle = isClay ? '#DFD8D2' : '#FFFFFF';
-        ctx.fillRect(cx - 21, mouthY - 5, 42, 7);
-      } else if (expr === 'shocked') {
-        ctx.fillStyle = isClay ? '#6E655F' : '#450A0A';
-        ctx.beginPath();
-        ctx.ellipse(cx, mouthY + 2, 16, 21, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#1E293B';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.fillStyle = isClay ? '#DFD8D2' : '#FFFFFF';
-        ctx.fillRect(cx - 10, mouthY - 15, 20, 5);
-      }
-
-      if (isWire) {
-        drawWireframeMeshOverlay(ctx, cx, cy, headRx, headRy, true);
-      }
-
-      ctx.restore();
-      return;
-    }
-
-    // ========================================================================
-    // ORTHOGRAPHIC FULL-BODY TURNAROUND & POSE VIEWS (Views 01 to 07)
-    // Drawn in normalized 300x380 coordinate system with 4.5-head ratio
-    // ========================================================================
-    const cx = LOGICAL_W * 0.5;
-    const groundY = LOGICAL_H - 34;
-
-    // Ground Contact Shadow Disc
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.16)';
-    ctx.beginPath();
-    ctx.ellipse(cx, groundY + 4, 60, 10, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    const pose = view.poseKey;
-    const combatCrouch = pose === 'combat' ? 10 : 0;
-    const stanceSpread = pose === 'combat' ? 22 : pose === 'victory' ? 14 : 0;
-
-    const headCenterY = 74 + combatCrouch * 0.5;
-    const headRx = (isSide ? 26 : 28) * proportions.headWidthFactor;
-    const headRy = 32;
-
-    const torsoTopY = 108 + combatCrouch * 0.6;
-    const torsoH = 104;
-    const shoulderHalfW = isSide
-      ? 26 * proportions.bellyRadiusFactor
-      : 42 * proportions.shoulderToHipRatio * 0.85;
-    const bellyHalfW = isSide
-      ? 34 * proportions.bellyRadiusFactor
-      : 38 * proportions.bellyRadiusFactor;
-
-    const hipY = torsoTopY + torsoH;
-    const kneeY = hipY + 62 - combatCrouch * 0.4;
-    const ankleY = groundY - 12;
-
-    const leftHipX = isSide ? cx - 2 : cx - 19 - stanceSpread * 0.35;
-    const rightHipX = isSide ? cx + 2 : cx + 19 + stanceSpread * 0.35;
-    const leftFootX = isSide ? cx - 4 : cx - 21 - stanceSpread;
-    const rightFootX = isSide ? cx + 4 : cx + 21 + stanceSpread;
-
-    // Unified smooth 2-bone limb helper (draws thigh+calf or upper+forearm as a single continuous volume)
-    const drawContinuousLimb = (
-      x1: number,
-      y1: number,
-      xMid: number,
-      yMid: number,
-      x2: number,
-      y2: number,
-      rStart: number,
-      rEnd: number,
-      colorHex: string,
-      clayHex = '#C0B6AF'
-    ) => {
-      ctx.save();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      // Outer dark contour stroke
-      ctx.strokeStyle = isWire ? '#0F172A' : darkenHex(col(colorHex, clayHex), 42);
-      ctx.lineWidth = (rStart + rEnd) + 2.4;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.quadraticCurveTo(xMid, yMid, x2, y2);
-      ctx.stroke();
-
-      // Main 3D shaded base stroke
-      ctx.strokeStyle = col(colorHex, clayHex);
-      ctx.lineWidth = rStart + rEnd;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.quadraticCurveTo(xMid, yMid, x2, y2);
-      ctx.stroke();
-
-      // Studio key-light highlight ridge along limb
-      ctx.strokeStyle = lightenHex(col(colorHex, clayHex), 22);
-      ctx.lineWidth = (rStart + rEnd) * 0.42;
-      ctx.beginPath();
-      ctx.moveTo(x1 - 2, y1);
-      ctx.quadraticCurveTo(xMid - 2, yMid, x2 - 2, y2);
-      ctx.stroke();
-      ctx.restore();
+      renderer.render(scene, camera);
+      rafId = requestAnimationFrame(tick);
     };
 
-    // 1. LEGS & TROUSERS / DHOTI / CHURIDAR
-    const legR = 13 * proportions.limbThicknessFactor;
-    const calfR = 10 * proportions.limbThicknessFactor;
+    rafId = requestAnimationFrame(tick);
 
-    drawContinuousLimb(leftHipX, hipY, leftFootX, kneeY, leftFootX, ankleY, legR, calfR, palette.bottomGarment);
-    drawContinuousLimb(rightHipX, hipY, rightFootX, kneeY, rightFootX, ankleY, legR, calfR, palette.bottomGarment);
-
-    // Character 03 Traditional Pleated Dhoti Drape
-    if (fighterId === 'lalu') {
-      ctx.beginPath();
-      ctx.moveTo(leftHipX - 14, hipY - 6);
-      ctx.quadraticCurveTo(cx, kneeY + 32, rightHipX + 14, hipY - 6);
-      ctx.closePath();
-      fill3DVolume(cx, hipY + 24, 36, 34, palette.bottomGarment, '#D0C7C0');
-    }
-
-    // 2. CLEARLY VISIBLE FOOTWEAR
-    for (const [idx, fx] of [leftFootX, rightFootX].entries()) {
-      const dir = isSide ? sideDir : idx === 0 ? -1 : 1;
-      ctx.beginPath();
-      if (fighterId === 'lalu') {
-        ctx.moveTo(fx - 12, groundY);
-        ctx.lineTo(fx + dir * 18, groundY);
-        ctx.quadraticCurveTo(fx + dir * 24, groundY - 14, fx + dir * 15, groundY - 16);
-        ctx.lineTo(fx - 11, groundY - 10);
-        ctx.closePath();
-      } else {
-        ctx.roundRect(fx - 14 + (isSide ? sideDir * 4 : 0), groundY - 12, 28, 12, 5);
-      }
-      fill3DVolume(fx, groundY - 6, 15, 8, palette.footwearColor, '#8F847C');
-
-      if (fighterId === 'yatra' && !isClay) {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(fx - 13 + (isSide ? sideDir * 4 : 0), groundY - 3, 26, 3);
-      }
-    }
-
-    // 3. TORSO & FORMAL INDIAN POLITICAL GARMENTS
-    if (fighterId === 'vikas' || fighterId === 'lalu') {
-      ctx.beginPath();
-      ctx.roundRect(cx - bellyHalfW * 0.96, hipY - 14, bellyHalfW * 1.92, 40, 6);
-      fill3DVolume(cx, hipY + 6, bellyHalfW, 24, palette.topGarmentSecondary, '#D8D0C8');
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(cx - shoulderHalfW, torsoTopY);
-    ctx.quadraticCurveTo(cx, torsoTopY - 9, cx + shoulderHalfW, torsoTopY);
-    ctx.quadraticCurveTo(
-      cx + bellyHalfW * 1.08,
-      torsoTopY + torsoH * 0.55,
-      cx + bellyHalfW * 0.95,
-      hipY
-    );
-    ctx.lineTo(cx - bellyHalfW * 0.95, hipY);
-    ctx.quadraticCurveTo(
-      cx - bellyHalfW * 1.08,
-      torsoTopY + torsoH * 0.55,
-      cx - shoulderHalfW,
-      torsoTopY
-    );
-    ctx.closePath();
-    fill3DVolume(cx, torsoTopY + torsoH * 0.5, bellyHalfW, torsoH * 0.55, palette.topGarmentPrimary);
-
-    if (!isBack) {
-      const seamX = cx + horizOffset;
-      ctx.strokeStyle = isClay ? '#8C827A' : darkenHex(palette.topGarmentPrimary, 35);
-      ctx.lineWidth = 1.8;
-      ctx.beginPath();
-      ctx.moveTo(seamX, torsoTopY + 2);
-      ctx.lineTo(seamX, hipY);
-      ctx.stroke();
-
-      if (fighterId === 'vikas' || fighterId === 'lalu') {
-        for (let b = 0; b < 5; b++) {
-          ctx.fillStyle = isClay ? '#7C726B' : palette.accessoryAccent;
-          ctx.beginPath();
-          ctx.arc(seamX, torsoTopY + 18 + b * 17, 2.6, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      if (fighterId === 'lalu') {
-        ctx.strokeStyle = col('#F59E0B', '#8E847C');
-        ctx.lineWidth = 2.2;
-        ctx.beginPath();
-        ctx.arc(seamX - 18, torsoTopY + 64, 6.5, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(seamX, torsoTopY + 52);
-        ctx.quadraticCurveTo(seamX - 9, torsoTopY + 72, seamX - 18, torsoTopY + 64);
-        ctx.stroke();
-      }
-    } else {
-      ctx.strokeStyle = isClay ? '#8C827A' : darkenHex(palette.topGarmentPrimary, 28);
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.moveTo(cx, torsoTopY + 2);
-      ctx.lineTo(cx, hipY);
-      ctx.moveTo(cx - shoulderHalfW * 0.85, torsoTopY + 24);
-      ctx.lineTo(cx + shoulderHalfW * 0.85, torsoTopY + 24);
-      ctx.stroke();
-    }
-
-    // 4. ARMS & CLEARLY VISIBLE 5-FINGERED HANDS
-    const armR = 10 * proportions.limbThicknessFactor;
-    const forearmR = 8.2 * proportions.limbThicknessFactor;
-
-    const getArmJoints = (side: -1 | 1) => {
-      const sx = isSide ? cx : cx + side * (shoulderHalfW - 2);
-      const sy = torsoTopY + 12;
-      if (pose === 'apose') {
-        const ex = sx + side * 24;
-        const ey = sy + 40;
-        const hx = ex + side * 20;
-        const hy = ey + 38;
-        return { sx, sy, ex, ey, hx, hy };
-      }
-      if (pose === 'combat') {
-        const ex = sx + side * 22;
-        const ey = sy + 34;
-        const hx = sx + side * (side === 1 ? 36 : 14);
-        const hy = sy + (side === 1 ? 4 : 14);
-        return { sx, sy, ex, ey, hx, hy };
-      }
-      if (pose === 'victory') {
-        if (side === 1) {
-          return { sx, sy, ex: sx + 24, ey: sy - 22, hx: sx + 20, hy: sy - 58 };
-        }
-        return { sx, sy, ex: sx - 22, ey: sy + 28, hx: sx - 16, hy: sy + 12 };
-      }
-      const ex = isSide ? cx + sideDir * 5 : sx + side * 11;
-      const ey = sy + 42;
-      const hx = isSide ? cx + sideDir * 7 : sx + side * 13;
-      const hy = ey + 40;
-      return { sx, sy, ex, ey, hx, hy };
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(rafId);
+      renderer.dispose();
     };
-
-    const sleeveCol =
-      fighterId === 'yatra' ? palette.skinBase : palette.topGarmentSecondary;
-
-    for (const side of isSide ? ([1] as const) : ([-1, 1] as const)) {
-      const { sx, sy, ex, ey, hx, hy } = getArmJoints(side);
-      drawContinuousLimb(sx, sy, ex, ey, hx, hy, armR, forearmR, sleeveCol);
-
-      if (fighterId === 'yatra' && side === 1) {
-        ctx.fillStyle = col('#0F172A', '#6E655F');
-        ctx.fillRect(hx - 7, hy - 9, 14, 7);
-      }
-
-      // Sculpted Hand + Fingers
-      ctx.beginPath();
-      ctx.arc(hx, hy + 4, 8, 0, Math.PI * 2);
-      fill3DVolume(hx, hy + 4, 8, 8, palette.skinBase);
-
-      if (pose !== 'combat' && pose !== 'victory') {
-        for (let f = -1.5; f <= 1.5; f += 1) {
-          ctx.beginPath();
-          ctx.roundRect(hx + f * 3.3 - 1.3, hy + 8, 2.6, 7, 1.2);
-          fill3DVolume(hx + f * 3.3, hy + 11, 1.6, 3.5, palette.skinBase);
-        }
-      }
-    }
-
-    // 5. HEAD, HAIRSTYLE & FACIAL GEOMETRY
-    ctx.beginPath();
-    ctx.roundRect(cx - 13, torsoTopY - 16, 26, 20, 6);
-    fill3DVolume(cx, torsoTopY - 6, 13, 10, palette.skinBase);
-
-    if (fighterId === 'lalu') {
-      for (const side of isSide ? ([-sideDir] as const) : ([-1, 1] as const)) {
-        ctx.beginPath();
-        ctx.ellipse(
-          cx + side * (headRx + 5),
-          headCenterY - 4,
-          11,
-          15,
-          side * -0.35,
-          0,
-          Math.PI * 2
-        );
-        fill3DVolume(cx + side * (headRx + 5), headCenterY - 4, 11, 15, palette.hairPrimary);
-      }
-    }
-
-    ctx.beginPath();
-    ctx.ellipse(cx, headCenterY, headRx, headRy, 0, 0, Math.PI * 2);
-    fill3DVolume(cx, headCenterY, headRx, headRy, palette.skinBase);
-
-    if (fighterId === 'vikas') {
-      ctx.beginPath();
-      ctx.ellipse(
-        cx,
-        headCenterY - headRy * 0.55,
-        headRx * 0.98,
-        isBack ? 26 : 16,
-        0,
-        isBack ? 0 : Math.PI,
-        Math.PI * 2
-      );
-      fill3DVolume(cx, headCenterY - headRy * 0.6, headRx, 17, palette.hairPrimary);
-    } else if (fighterId === 'yatra') {
-      ctx.beginPath();
-      ctx.ellipse(
-        cx,
-        headCenterY - headRy * 0.5,
-        headRx * 1.1,
-        isBack ? 28 : 19,
-        0,
-        isBack ? 0 : Math.PI * 0.9,
-        Math.PI * 2.1
-      );
-      fill3DVolume(cx, headCenterY - headRy * 0.55, headRx * 1.1, 19, palette.hairPrimary, '#8C827A');
-
-      ctx.beginPath();
-      ctx.roundRect(cx - headRx * 0.98, headCenterY - 21, headRx * 1.96, 8, 3);
-      fill3DVolume(cx, headCenterY - 17, headRx, 5, palette.accessoryAccent, '#9E948C');
-    } else if (fighterId === 'lalu' && isBack) {
-      ctx.beginPath();
-      ctx.roundRect(cx - headRx, headCenterY - 6, headRx * 2, 13, 6);
-      fill3DVolume(cx, headCenterY, headRx, 8, palette.hairPrimary);
-    }
-
-    if (!isBack) {
-      const faceCenterX = cx + horizOffset;
-
-      if (fighterId === 'vikas') {
-        ctx.beginPath();
-        ctx.ellipse(
-          faceCenterX,
-          headCenterY + 15,
-          isSide ? headRx * 0.72 : headRx * 0.88,
-          18,
-          0,
-          0,
-          Math.PI
-        );
-        fill3DVolume(faceCenterX, headCenterY + 17, headRx * 0.85, 17, palette.hairPrimary);
-      } else if (fighterId === 'yatra') {
-        ctx.beginPath();
-        ctx.ellipse(
-          faceCenterX,
-          headCenterY + 12,
-          isSide ? headRx * 0.65 : headRx * 0.82,
-          15,
-          0,
-          0.1,
-          Math.PI - 0.1
-        );
-        fill3DVolume(
-          faceCenterX,
-          headCenterY + 15,
-          headRx * 0.8,
-          14,
-          palette.hairPrimary,
-          '#8C827A'
-        );
-      }
-
-      const eyePositions = isSide ? [faceCenterX + sideDir * 7] : [faceCenterX - 10, faceCenterX + 10];
-      for (const ex of eyePositions) {
-        ctx.fillStyle = isClay ? '#DFD8D2' : '#FFFFFF';
-        ctx.beginPath();
-        ctx.ellipse(ex, headCenterY - 3, 4.8, 3.8, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#0F172A';
-        ctx.beginPath();
-        ctx.arc(ex + (isSide ? sideDir * 1 : 0), headCenterY - 3, 2.3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      if (fighterId === 'vikas') {
-        ctx.strokeStyle = col('#D97706', '#8E847C');
-        ctx.lineWidth = 1.7;
-        for (const ex of eyePositions) {
-          ctx.beginPath();
-          ctx.roundRect(ex - 6.5, headCenterY - 7.5, 13, 8.5, 2);
-          ctx.stroke();
-        }
-      }
-
-      ctx.beginPath();
-      if (isSide) {
-        ctx.moveTo(faceCenterX + sideDir * 11, headCenterY - 4);
-        ctx.lineTo(faceCenterX + sideDir * 20, headCenterY + 4);
-        ctx.lineTo(faceCenterX + sideDir * 11, headCenterY + 7);
-      } else {
-        ctx.arc(faceCenterX, headCenterY + 4, 4.2, 0, Math.PI * 2);
-      }
-      fill3DVolume(faceCenterX + (isSide ? sideDir * 14 : 0), headCenterY + 3, 4.5, 5, palette.skinBase);
-
-      ctx.strokeStyle = '#450A0A';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      if (view.expressionKey === 'laughing') {
-        ctx.arc(faceCenterX, headCenterY + 13, 6.5, 0, Math.PI);
-      } else {
-        ctx.moveTo(faceCenterX - 5.5, headCenterY + 14);
-        ctx.quadraticCurveTo(faceCenterX, headCenterY + 17, faceCenterX + 5.5, headCenterY + 14);
-      }
-      ctx.stroke();
-    }
-
-    if (isWire) {
-      drawWireframeMeshOverlay(ctx, cx, torsoTopY + 42, bellyHalfW, torsoH, false);
-    }
-
-    ctx.restore();
-  }, [character, view, materialMode, showGrid, customYaw, width, height]);
+  }, [glbUrl]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: `${width}px`, height: `${height}px` }}
-      className="block mx-auto select-none"
-    />
+    <div className="bg-[#D4D8DF] border border-slate-300 rounded-lg p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-0.5 rounded bg-slate-900 text-amber-400 font-mono text-[10px] font-bold uppercase">
+            LIVE THREE.JS GLB RIG ({glbUrl})
+          </span>
+          {triCount > 0 && (
+            <span className="font-mono text-[10px] text-slate-700 font-bold">
+              {triCount.toLocaleString()} TRIS · {animNames.length} CLIPS
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setAutoRotate((v) => !v)}
+            className={`px-2 py-1 rounded text-[10px] font-mono font-bold border transition ${
+              autoRotate
+                ? 'bg-slate-900 text-white border-slate-900'
+                : 'bg-white text-slate-700 border-slate-300'
+            }`}
+          >
+            {autoRotate ? '360° TURNTABLE: ON' : '360° TURNTABLE: OFF'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setHeadCloseup((v) => !v)}
+            className={`px-2 py-1 rounded text-[10px] font-mono font-bold border transition ${
+              headCloseup
+                ? 'bg-amber-600 text-white border-amber-700'
+                : 'bg-white text-slate-700 border-slate-300'
+            }`}
+          >
+            {headCloseup ? 'HEAD CLOSEUP' : 'FULL BODY'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+        <div
+          ref={mountRef}
+          className="lg:col-span-5 h-[280px] w-full rounded border border-slate-300 bg-[#E5E7EB] overflow-hidden"
+        />
+        <div className="lg:col-span-7 space-y-2.5">
+          <div>
+            <div className="text-[10px] font-mono font-bold uppercase text-slate-700 mb-1">
+              Orthographic Camera Angle ({Math.round(yawDeg)}°)
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { label: 'Front (0°)', deg: 0 },
+                { label: '3/4 View (35°)', deg: 35 },
+                { label: 'Side (90°)', deg: 90 },
+                { label: 'Back (180°)', deg: 180 },
+                { label: 'Left Side (270°)', deg: 270 },
+              ].map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => {
+                    setAutoRotate(false);
+                    setYawDeg(preset.deg);
+                  }}
+                  className="px-2.5 py-1 rounded bg-white hover:bg-slate-900 hover:text-white text-slate-800 border border-slate-300 font-mono text-[10px] font-bold transition"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] font-mono font-bold uppercase text-slate-700 mb-1">
+              Embedded FightKaro Skeletal Animations ({animNames.length} clips in {glbUrl})
+            </div>
+            <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto pr-1">
+              {animNames.map((clipName) => (
+                <button
+                  key={clipName}
+                  type="button"
+                  onClick={() => setActiveClip(clipName)}
+                  className={`px-2 py-1 rounded font-mono text-[10px] font-bold border transition flex items-center gap-1 ${
+                    activeClip === clipName
+                      ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-xs'
+                      : 'bg-white/90 text-slate-700 border-slate-300 hover:bg-white'
+                  }`}
+                >
+                  <Play className="w-2.5 h-2.5" />
+                  {clipName}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 };
 
-function drawWireframeMeshOverlay(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  rx: number,
-  ry: number,
-  isHead: boolean
-) {
-  ctx.save();
-  ctx.strokeStyle = 'rgba(37, 99, 235, 0.35)';
-  ctx.lineWidth = 0.9;
-  const rings = isHead ? 5 : 7;
-  for (let i = 1; i <= rings; i++) {
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, (rx / rings) * i, (ry / rings) * i, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  ctx.restore();
+interface CharacterSectionProps {
+  character: CharacterModelSheetSpec;
+  slotIndex: number;
+  materialMode: StudioMaterialMode;
+  showGridOverlay: boolean;
+  onChangeSlotFighter: (slotIndex: number, fighterId: string) => void;
+  onInspectModal: (
+    character: CharacterModelSheetSpec,
+    view: OrthographicViewSpec,
+    snapshotUrl?: string
+  ) => void;
 }
 
-function lightenHex(hex: string, amount: number): string {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const r = Math.min(255, ((num >> 16) & 0xff) + amount);
-  const g = Math.min(255, ((num >> 8) & 0xff) + amount);
-  const b = Math.min(255, (num & 0xff) + amount);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-function darkenHex(hex: string, amount: number): string {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const r = Math.max(0, ((num >> 16) & 0xff) - amount);
-  const g = Math.max(0, ((num >> 8) & 0xff) - amount);
-  const b = Math.max(0, (num & 0xff) - amount);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-export const CharacterModelSheetStudio: React.FC<CharacterModelSheetStudioProps> = ({
-  onSelectFighterForArena,
+const CharacterModelSheetSection: React.FC<CharacterSectionProps> = ({
+  character,
+  slotIndex,
+  materialMode,
+  showGridOverlay,
+  onChangeSlotFighter,
+  onInspectModal,
 }) => {
-  const [selectedCharacterFilter, setSelectedCharacterFilter] = useState<string>('ALL');
-  const [materialMode, setMaterialMode] = useState<StudioMaterialMode>('cartoon_pbr');
-  const [showProportionGrid, setShowProportionGrid] = useState<boolean>(true);
-  const [inspectedState, setInspectedState] = useState<{
-    character: CharacterModelSheetSpec;
-    view: OrthographicViewSpec;
-    customYaw: number;
-  } | null>(null);
-  const [lightboxImage, setLightboxImage] = useState<{
-    url: string;
-    title: string;
-    subtitle: string;
-  } | null>(null);
-  const [exportStatus, setExportStatus] = useState<string>('');
-  const [imgErrors, setImgErrors] = useState<Record<string, boolean>>({});
+  const [snapshots, setSnapshots] = useState<Record<ModelSheetViewId, string>>(
+    {} as Record<ModelSheetViewId, string>
+  );
+  const [loadingGlb, setLoadingGlb] = useState<boolean>(true);
+  const [meshList, setMeshList] = useState<string[]>(
+    character.sculptSpecs.glbMeshGroups
+  );
+  const [animList, setAnimList] = useState<string[]>(
+    character.sculptSpecs.glbAnimations
+  );
+  const [actualTris, setActualTris] = useState<number>(
+    character.sculptSpecs.triCountBudget
+  );
+  const [showLiveTurntable, setShowLiveTurntable] = useState<boolean>(false);
 
-  // Close active modal on Escape key
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setInspectedState(null);
-        setLightboxImage(null);
-      }
+    let cancelled = false;
+    setLoadingGlb(true);
+    renderTenViewsForGlb(character.glbUrl, materialMode, MANDATORY_TEN_VIEWS)
+      .then((res) => {
+        if (cancelled) return;
+        setSnapshots(res.snapshots);
+        if (res.meshNames.length > 0) setMeshList(res.meshNames);
+        if (res.animationNames.length > 0) setAnimList(res.animationNames);
+        if (res.triangleCount > 0) setActualTris(res.triangleCount);
+        setLoadingGlb(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadingGlb(false);
+      });
+    return () => {
+      cancelled = true;
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [character.glbUrl, materialMode]);
 
-  const visibleCharacters =
-    selectedCharacterFilter === 'ALL'
-      ? CHARACTER_MODEL_SHEETS
-      : CHARACTER_MODEL_SHEETS.filter((c) => c.slotNumber === selectedCharacterFilter);
+  const turnaroundViews = MANDATORY_TEN_VIEWS.filter((v) => v.index <= 5);
+  const poseAndExpressionViews = MANDATORY_TEN_VIEWS.filter((v) => v.index >= 6);
 
-  const handleExportReferenceSheet = () => {
-    setExportStatus('Compiling 2400×1800 Orthographic 3D Character Reference Sheet PNG…');
-    try {
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = 2400;
-      exportCanvas.height = 1800;
-      const ctx = exportCanvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#E5E7EB';
-        ctx.fillRect(0, 0, 2400, 1800);
-        ctx.fillStyle = '#0F172A';
-        ctx.font = 'bold 42px Oswald, sans-serif';
-        ctx.fillText(
-          'LOKSABHA LEGENDS — AAA 3D CHARACTER DEVELOPMENT MODEL SHEET (3 CHARACTERS · 30 ORTHOGRAPHIC VIEWS)',
-          60,
-          75
-        );
-        CHARACTER_MODEL_SHEETS.forEach((char, idx) => {
-          const yTop = 130 + idx * 540;
-          ctx.fillStyle = '#DCE0E6';
-          ctx.fillRect(50, yTop, 2300, 500);
-          ctx.fillStyle = '#0F172A';
-          ctx.font = 'bold 30px Oswald, sans-serif';
-          ctx.fillText(
-            `${char.slotNumber}: ${char.name} (${char.parodyTitle}) — Ratio 1:${char.proportions.headToBodyRatio}`,
-            80,
-            yTop + 48
-          );
-          MANDATORY_TEN_VIEWS.forEach((v, vIdx) => {
-            const vx = 80 + vIdx * 222;
-            ctx.fillStyle = '#E5E7EB';
-            ctx.fillRect(vx, yTop + 75, 205, 390);
-            ctx.strokeStyle = '#CBD5E1';
-            ctx.strokeRect(vx, yTop + 75, 205, 390);
-            ctx.fillStyle = '#1E293B';
-            ctx.font = 'bold 14px Plus Jakarta Sans, sans-serif';
-            ctx.fillText(v.title, vx + 10, yTop + 445);
-          });
-        });
-
-        const dataUrl = exportCanvas.toDataURL('image/png');
-        const link = document.createElement('a');
-        link.download = 'loksabha-legends-3d-character-model-sheet.png';
-        link.href = dataUrl;
-        link.click();
-      }
-      setExportStatus('Exported 2400×1800 3D Character Reference Sheet PNG (3 Characters · 30 Views).');
-      setTimeout(() => setExportStatus(''), 5000);
-    } catch {
-      setExportStatus('Model Sheet Ready for Inspection.');
+  const handlePanelClick = (view: OrthographicViewSpec, snap?: string) => {
+    // Also play matching voice/meme audio for pose & expression views!
+    if (view.id === 'victory_pose' || view.id === 'fighting_stance') {
+      sound.playCharacterSuperVoice(character.fighterId);
+    } else if (view.id === 'expr_angry') {
+      sound.playMp3('/audio/memes/rom_rom_bhaiyo.mp3', 0.9, true);
+    } else if (view.id === 'expr_laughing') {
+      sound.playMp3('/audio/memes/waah_kya_scene_hai.mp3', 0.9, true);
+    } else if (view.id === 'expr_shocked') {
+      sound.playMp3('/audio/memes/aayein.mp3', 0.9, true);
+    } else {
+      sound.playFighterMemeClip(character.fighterId);
     }
+    onInspectModal(character, view, snap);
+  };
+
+  const renderPanelCard = (view: OrthographicViewSpec) => {
+    const snap = snapshots[view.id];
+    const badgeColor =
+      view.category === 'turnaround'
+        ? 'bg-slate-800 text-white'
+        : view.category === 'pose'
+        ? 'bg-amber-700 text-white'
+        : 'bg-indigo-800 text-white';
+
+    return (
+      <div
+        key={view.id}
+        data-testid={`sheet-panel-${character.fighterId}-${view.id}`}
+        onClick={() => handlePanelClick(view, snap)}
+        className="group relative flex flex-col rounded-md border border-slate-300 bg-[#E5E7EB] overflow-hidden shadow-xs hover:border-slate-600 transition cursor-pointer"
+      >
+        <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#D5D9E0] border-b border-slate-300">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span
+              className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider shrink-0 ${badgeColor}`}
+            >
+              {String(view.index).padStart(2, '0')}
+            </span>
+            <span className="font-mono text-[10px] font-bold text-slate-900 truncate">
+              {view.title.replace(/^\d+\.\s*/, '')}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <Volume2 className="w-3 h-3 text-amber-700 opacity-75 group-hover:opacity-100" />
+            <Maximize2 className="w-3 h-3 text-slate-600 opacity-60 group-hover:opacity-100" />
+          </div>
+        </div>
+
+        <div className="relative w-full aspect-[5/6] bg-[#E5E7EB] flex items-center justify-center overflow-hidden">
+          {snap ? (
+            <img
+              src={snap}
+              alt={`${character.name} - ${view.title}`}
+              className="w-full h-full object-contain select-none"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-2 text-slate-600 p-4 text-center">
+              <div className="w-6 h-6 border-2 border-slate-700 border-t-transparent rounded-full animate-spin" />
+              <span className="font-mono text-[10px] font-bold uppercase">
+                Rendering 3D GLB ({character.glbUrl})...
+              </span>
+            </div>
+          )}
+
+          {showGridOverlay && (
+            <div
+              className="pointer-events-none absolute inset-0 opacity-25"
+              style={{
+                backgroundImage:
+                  'linear-gradient(to right, #64748b 1px, transparent 1px), linear-gradient(to bottom, #64748b 1px, transparent 1px)',
+                backgroundSize: '24px 24px',
+              }}
+            />
+          )}
+        </div>
+
+        <div className="px-2.5 py-1.5 bg-[#DCE0E6] border-t border-slate-300 flex items-center justify-between text-[9px] font-mono text-slate-700">
+          <span className="font-bold">{view.shortLabel}</span>
+          <span className="uppercase text-slate-600">
+            {view.cameraType === 'orthographic_head_closeup'
+              ? 'HEAD ORTHO + AUDIO'
+              : `YAW ${view.yawDegrees}°`}
+          </span>
+        </div>
+      </div>
+    );
   };
 
   return (
-    <div
-      data-testid="model-sheet-studio"
-      className="min-h-screen bg-[#E5E7EB] text-[#0F172A] pb-16"
+    <section
+      data-testid={`character-section-${character.fighterId}`}
+      className="rounded-xl border-2 border-slate-400 bg-[#E5E7EB] text-slate-900 shadow-md overflow-hidden"
     >
-      {/* Studio Control Sub-Header on Neutral Light Grey */}
-      <div className="bg-[#DCE0E6] border-b border-slate-300 px-4 sm:px-8 py-4">
-        <div className="max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-4">
+      {/* Top Character Sheet Banner */}
+      <div className="bg-[#D0D5DD] border-b-2 border-slate-400 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <img
+            src={character.portraitUrl}
+            alt={character.name}
+            className="w-14 h-14 rounded-lg object-cover border-2 border-slate-800 bg-slate-900 shrink-0"
+          />
           <div>
-            <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
-              AAA 3D GAME CHARACTER MODEL SHEET · FIGHTKARO ART DIRECTION
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-2 py-0.5 rounded bg-slate-900 text-amber-400 font-mono text-[10px] font-bold tracking-widest uppercase">
+                {character.slotNumber}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-700/40 text-slate-900 font-mono text-[10px] font-bold">
+                3D ASSET: {character.glbUrl}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-slate-800 text-white font-mono text-[10px] font-bold">
+                {character.teamName} · SUPER: {character.superMove}
+              </span>
+            </div>
+            <h2 className="font-display text-xl sm:text-2xl font-bold tracking-wide text-slate-950 uppercase mt-0.5">
+              {character.name}{' '}
+              <span className="text-sm font-sans font-semibold text-slate-700 normal-case">
+                — {character.parodyTitle}
+              </span>
+            </h2>
+          </div>
+        </div>
+
+        {/* Audio Triggers + Switch Character in this Sheet Slot + Toggle Live 3D Turntable */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => sound.playCharacterSuperVoice(character.fighterId)}
+            className="px-2.5 py-1.5 rounded bg-amber-500 hover:bg-amber-600 text-slate-950 font-mono text-xs font-bold border border-amber-700 transition flex items-center gap-1.5 shadow-xs"
+          >
+            <Volume2 className="w-3.5 h-3.5" />
+            Super Voice (.mp3)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => sound.playFighterMemeClip(character.fighterId)}
+            className="px-2.5 py-1.5 rounded bg-slate-900 hover:bg-slate-800 text-amber-300 font-mono text-xs font-bold border border-slate-900 transition flex items-center gap-1.5"
+          >
+            <Music className="w-3.5 h-3.5" />
+            Meme Dialogue
+          </button>
+
+          <label className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded border border-slate-300 text-xs font-mono font-bold text-slate-800">
+            <span>Swap 3D Model:</span>
+            <select
+              value={character.fighterId}
+              onChange={(e) => onChangeSlotFighter(slotIndex, e.target.value)}
+              className="bg-transparent font-bold text-slate-950 focus:outline-none cursor-pointer"
+            >
+              {Object.values(ALL_FIGHTKARO_CHARACTER_SPECS).map((spec) => (
+                <option key={spec.fighterId} value={spec.fighterId}>
+                  {spec.name} ({spec.glbUrl})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            type="button"
+            onClick={() => setShowLiveTurntable((v) => !v)}
+            className={`px-3 py-1.5 rounded font-mono text-xs font-bold border transition flex items-center gap-1.5 ${
+              showLiveTurntable
+                ? 'bg-slate-900 text-amber-400 border-slate-900'
+                : 'bg-white text-slate-900 border-slate-400 hover:bg-slate-100'
+            }`}
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            {showLiveTurntable ? 'Hide Live 3D Rig' : 'Interactive 3D Turntable'}
+          </button>
+        </div>
+      </div>
+
+      {/* Optional Live Interactive Three.js GLB Turntable */}
+      {showLiveTurntable && (
+        <div className="p-4 bg-[#DCE0E6] border-b border-slate-300">
+          <LiveGlbTurntable
+            glbUrl={character.glbUrl}
+            materialMode={materialMode}
+          />
+        </div>
+      )}
+
+      {/* 10 Mandatory Orthographic Views Grid (Rendered from real .glb 3D mesh) */}
+      <div className="p-4 space-y-3 bg-[#E5E7EB]">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-slate-700 border-b border-slate-300 pb-2">
+          <div className="flex items-center gap-2 font-bold text-slate-900">
+            <Box className="w-4 h-4 text-amber-700" />
+            <span>
+              10 ORTHOGRAPHIC 3D GLB REFERENCE VIEWS · CLICK ANY VIEW TO PLAY SCENE AUDIO & INSPECT 3D RIG
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-[11px]">
+            <span>
+              TRIANGLES: <strong>{actualTris.toLocaleString()}</strong>
+            </span>
+            <span>
+              MESH GROUPS: <strong>{meshList.length}</strong>
+            </span>
+            <span>
+              RIG CLIPS: <strong>{animList.length}</strong>
+            </span>
+            {loadingGlb && (
+              <span className="text-amber-800 font-bold animate-pulse">
+                Baking 3D Orthographic Views...
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Row 1: Views 01 to 05 (Front, Side, Back, 3/4, Neutral Standing Pose) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {turnaroundViews.map(renderPanelCard)}
+        </div>
+
+        {/* Row 2: Views 06 to 10 (Fighting Stance, Victory Pose, Angry, Laughing, Shocked) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {poseAndExpressionViews.map(renderPanelCard)}
+        </div>
+      </div>
+
+      {/* Footer Specs: GLB Sub-Meshes, Proportions & Clothing Details */}
+      <div className="bg-[#D5D9E0] border-t border-slate-300 px-4 py-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-800">
+        <div>
+          <div className="font-mono text-[10px] font-bold uppercase text-slate-600 mb-1">
+            Front / Side / Back Clothing & Anatomy
+          </div>
+          <p className="text-[11px] leading-relaxed">
+            <strong>Front:</strong> {character.anatomyAndGarments.frontDetails}{' '}
+            <strong>Side:</strong> {character.anatomyAndGarments.sideDetails}{' '}
+            <strong>Back:</strong> {character.anatomyAndGarments.backDetails}
+          </p>
+        </div>
+        <div>
+          <div className="font-mono text-[10px] font-bold uppercase text-slate-600 mb-1">
+            Face, Hairstyle, Hands & Footwear
+          </div>
+          <p className="text-[11px] leading-relaxed">
+            <strong>Face & Hair:</strong> {character.anatomyAndGarments.hairstyle}{' '}
+            <strong>Hands/Feet:</strong> {character.anatomyAndGarments.handsAndFeet}
+          </p>
+        </div>
+        <div>
+          <div className="font-mono text-[10px] font-bold uppercase text-slate-600 mb-1">
+            Official {character.glbUrl} Sub-Meshes
+          </div>
+          <div className="flex flex-wrap gap-1 mt-1">
+            {meshList.map((m) => (
+              <span
+                key={m}
+                className="px-1.5 py-0.5 rounded bg-white border border-slate-300 font-mono text-[10px] font-bold text-slate-800"
+              >
+                {m}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+};
+
+interface CharacterModelSheetStudioProps {
+  onSelectFighterForMatch?: (fighterId: string) => void;
+}
+
+export const CharacterModelSheetStudio: React.FC<
+  CharacterModelSheetStudioProps
+> = ({ onSelectFighterForMatch }) => {
+  // 3 Character Slots on the Model Sheet (defaulting to MitraMan, Yatra Boy, Dozer Dada)
+  const [slotFighterIds, setSlotFighterIds] = useState<[string, string, string]>([
+    'vikas',
+    'yatra',
+    'yogi',
+  ]);
+  const [materialMode, setMaterialMode] =
+    useState<StudioMaterialMode>('cartoon_pbr');
+  const [showGridOverlay, setShowGridOverlay] = useState<boolean>(true);
+
+  // Scene & Viral Political Audio Soundboard State
+  const [sceneCategoryFilter, setSceneCategoryFilter] = useState<
+    'all' | 'viral_meme' | 'character_super' | 'stage_scene'
+  >('all');
+  const [activeScene, setActiveScene] = useState<PoliticalAudioSceneItem>(
+    POLITICAL_SCENE_AUDIO_CATALOG[0]
+  );
+  const [playingSceneId, setPlayingSceneId] = useState<string | null>(null);
+
+  // Fight Karo Characters Roster Filter & Sort (matching https://fightfightkaro.com/characters/)
+  const [rosterFilter, setRosterFilter] = useState<'all' | 'boss' | 'selectable'>(
+    'all'
+  );
+  const [rosterSort, setRosterSort] = useState<
+    'game_order' | 'name_az' | 'status_group'
+  >('game_order');
+
+  // Modal state for high-res orthographic inspection
+  const [modalData, setModalData] = useState<{
+    character: CharacterModelSheetSpec;
+    view: OrthographicViewSpec;
+    snapshotUrl?: string;
+  } | null>(null);
+
+  const activeThreeCharacters: CharacterModelSheetSpec[] = useMemo(() => {
+    const slots: ('CHARACTER 01' | 'CHARACTER 02' | 'CHARACTER 03')[] = [
+      'CHARACTER 01',
+      'CHARACTER 02',
+      'CHARACTER 03',
+    ];
+    return slotFighterIds.map((id, idx) => {
+      const spec =
+        ALL_FIGHTKARO_CHARACTER_SPECS[id] || ALL_FIGHTKARO_CHARACTER_SPECS.vikas;
+      return {
+        slotNumber: slots[idx],
+        ...spec,
+      };
+    });
+  }, [slotFighterIds]);
+
+  const validation = useMemo(
+    () =>
+      validateModelSheetConsistency(
+        CHARACTER_MODEL_SHEETS,
+        MANDATORY_TEN_VIEWS
+      ),
+    []
+  );
+
+  const filteredScenes = useMemo(() => {
+    if (sceneCategoryFilter === 'all') return POLITICAL_SCENE_AUDIO_CATALOG;
+    return POLITICAL_SCENE_AUDIO_CATALOG.filter(
+      (s) => s.category === sceneCategoryFilter
+    );
+  }, [sceneCategoryFilter]);
+
+  const filteredAndSortedRoster = useMemo(() => {
+    const filtered = FIGHTKARO_ROSTER_ENTRIES.filter((entry) => {
+      if (rosterFilter === 'boss') return entry.status === 'Boss';
+      if (rosterFilter === 'selectable') return entry.status === 'Playable';
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      if (rosterSort === 'name_az') {
+        return a.name.localeCompare(b.name);
+      }
+      if (rosterSort === 'status_group') {
+        const rank = { Playable: 1, Boss: 2, Special: 3 };
+        if (rank[a.status] !== rank[b.status]) {
+          return rank[a.status] - rank[b.status];
+        }
+        return a.order - b.order;
+      }
+      return a.order - b.order;
+    });
+  }, [rosterFilter, rosterSort]);
+
+  const handleSlotChange = (slotIdx: number, newFighterId: string) => {
+    setSlotFighterIds((prev) => {
+      const next: [string, string, string] = [...prev] as [
+        string,
+        string,
+        string,
+      ];
+      next[slotIdx] = newFighterId;
+      return next;
+    });
+  };
+
+  const handleLoadIntoSheet = (fighterId: string) => {
+    if (!ALL_FIGHTKARO_CHARACTER_SPECS[fighterId]) return;
+    if (slotFighterIds.includes(fighterId)) {
+      const el = document.querySelector(
+        `[data-testid="character-section-${fighterId}"]`
+      );
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    setSlotFighterIds((prev) => [prev[0], prev[1], fighterId]);
+  };
+
+  const handleTriggerScene = (sceneItem: PoliticalAudioSceneItem) => {
+    setActiveScene(sceneItem);
+    setPlayingSceneId(sceneItem.id);
+    sound.playSceneAudio(sceneItem);
+  };
+
+  return (
+    <div className="space-y-8 pb-12">
+      {/* Studio Control Header */}
+      <div className="rounded-xl border border-white/15 bg-[#1B110C] p-4 sm:p-5 shadow-xl">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className="px-2.5 py-0.5 rounded bg-[#FF9933] text-[#120A06] font-mono text-[11px] font-bold uppercase tracking-wider">
+                OFFICIAL FIGHTKARO 3D GLB MODEL SHEET & POLITICAL AUDIO SCENES
+              </span>
+              <span className="px-2.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-mono text-[11px] font-bold flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {validation.characterCount} CHARACTERS × {validation.viewsPerCharacter} ORTHO GLB VIEWS + 28 POLITICAL AUDIO SCENES
+              </span>
+            </div>
+            <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-wide text-white uppercase">
+              Fight Karo 3D Character Model Sheet & Viral Political Scene Audio Studio
             </h1>
-            <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
-              3 Original Indian Political Parody Fighters · 10 Orthographic Turnarounds, Poses & Facial Blendshapes Per Character · Neutral Grey Studio Cyclorama
+            <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-4xl">
+              Rendered directly from the authentic FightKaro 3D{' '}
+              <code className="text-amber-300 font-mono">.glb</code> character
+              meshes (<code className="text-amber-300 font-mono">/models/*.glb</code>),{' '}
+              <code className="text-amber-300 font-mono">/faces/*.webp</code> portraits, and{' '}
+              <code className="text-amber-300 font-mono">80+ .mp3</code> Indian political comedy & meme audio clips.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Character Section Filter */}
-            <div
-              role="group"
-              aria-label="Filter Character Sections"
-              className="flex items-center gap-1 bg-slate-300/80 p-1 rounded-lg"
-            >
-              {(['ALL', 'CHARACTER 01', 'CHARACTER 02', 'CHARACTER 03'] as const).map((slot) => (
-                <button
-                  key={slot}
-                  type="button"
-                  onClick={() => setSelectedCharacterFilter(slot)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
-                    selectedCharacterFilter === slot
-                      ? 'bg-slate-900 text-white shadow-xs'
-                      : 'text-slate-700 hover:text-slate-950'
-                  }`}
-                >
-                  {slot === 'ALL' ? 'All 3 Characters' : slot}
-                </button>
-              ))}
-            </div>
-
-            {/* 3D Material Shader Switcher */}
-            <div
-              role="group"
-              aria-label="3D Material Shader Mode"
-              className="flex items-center gap-1 bg-slate-300/80 p-1 rounded-lg"
-            >
+          {/* 3D Shader & Grid Controls */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center rounded-lg bg-black/40 p-1 border border-white/10">
               {(
                 [
-                  { id: 'cartoon_pbr', label: 'Stylized 3D Cartoon' },
-                  { id: 'zbrush_clay', label: 'ZBrush Studio Clay' },
-                  { id: 'wireframe_topo', label: 'Wireframe Topology' },
-                ] as const
-              ).map((m) => (
+                  { id: 'cartoon_pbr', label: '3D Cartoon PBR' },
+                  { id: 'zbrush_clay', label: 'ZBrush Sculpt Clay' },
+                  { id: 'wireframe_topo', label: '3D Wireframe Topo' },
+                ] as { id: StudioMaterialMode; label: string }[]
+              ).map((mode) => (
                 <button
-                  key={m.id}
+                  key={mode.id}
                   type="button"
-                  onClick={() => setMaterialMode(m.id)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
-                    materialMode === m.id
-                      ? 'bg-amber-600 text-white shadow-xs'
-                      : 'text-slate-700 hover:text-slate-950'
+                  onClick={() => setMaterialMode(mode.id)}
+                  className={`px-3 py-1.5 rounded-md font-mono text-xs font-bold transition ${
+                    materialMode === mode.id
+                      ? 'bg-[#FF9933] text-[#120A06]'
+                      : 'text-slate-300 hover:text-white'
                   }`}
                 >
-                  {m.label}
+                  {mode.label}
                 </button>
               ))}
             </div>
 
-            {/* Orthographic Proportion Grid Toggle */}
             <button
               type="button"
-              onClick={() => setShowProportionGrid((prev) => !prev)}
-              className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-                showProportionGrid
-                  ? 'bg-slate-800 text-white border-slate-800'
-                  : 'bg-white/80 text-slate-800 border-slate-300 hover:bg-white'
+              onClick={() => setShowGridOverlay((v) => !v)}
+              className={`px-3 py-2 rounded-lg font-mono text-xs font-bold border transition flex items-center gap-1.5 ${
+                showGridOverlay
+                  ? 'bg-white/15 text-white border-white/30'
+                  : 'bg-black/30 text-slate-400 border-white/10'
               }`}
             >
-              {showProportionGrid ? 'Ortho Grid: ON' : 'Ortho Grid: OFF'}
+              <Layers className="w-3.5 h-3.5" />
+              Ortho Grid: {showGridOverlay ? 'ON' : 'OFF'}
             </button>
+          </div>
+        </div>
+      </div>
 
-            {/* Export PNG Sheet Button */}
+      {/* INTERACTIVE 3D POLITICAL AUDIO & SCENE THEATER (Matching All Viral Political & FightKaro Scenes) */}
+      <section
+        data-testid="political-scene-audio-theater"
+        className="rounded-xl border border-amber-500/35 bg-[#19100B] p-4 sm:p-5 shadow-2xl space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-[#FF9933] text-[#120A06] font-mono text-[10px] font-bold uppercase mb-1">
+              <Volume2 className="w-3.5 h-3.5" />
+              All Indian Political Meme Audio & FightKaro Scene Re-Creator
+            </div>
+            <h2 className="font-display text-xl sm:text-2xl font-bold text-white uppercase tracking-wide">
+              Viral Political Soundboard & Live 3D Scene Stage ({POLITICAL_SCENE_AUDIO_CATALOG.length} Scenes)
+            </h2>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {(
+              [
+                { id: 'all', label: 'All Scenes (28)' },
+                { id: 'viral_meme', label: '15 Viral Political Memes' },
+                { id: 'character_super', label: 'FightKaro Super Scenes' },
+                { id: 'stage_scene', label: 'Budget & Stage Hazards' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setSceneCategoryFilter(tab.id)}
+                className={`px-3 py-1.5 rounded-lg font-mono text-xs font-bold border transition ${
+                  sceneCategoryFilter === tab.id
+                    ? 'bg-[#FF9933] text-[#120A06] border-amber-300'
+                    : 'bg-black/40 text-slate-300 border-white/15 hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+
             <button
               type="button"
-              onClick={handleExportReferenceSheet}
-              className="px-4 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+              onClick={() => {
+                sound.stopActiveVoice();
+                setPlayingSceneId(null);
+              }}
+              className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 font-mono text-xs font-bold flex items-center gap-1"
             >
-              Export 3D Model Sheet (PNG)
+              <VolumeX className="w-3.5 h-3.5" />
+              Stop Audio
             </button>
           </div>
         </div>
 
-        {exportStatus && (
-          <div className="max-w-[1400px] mx-auto mt-3 px-4 py-2 bg-slate-900 text-amber-300 text-xs font-mono rounded-lg">
-            {exportStatus}
-          </div>
-        )}
-      </div>
-
-      <div className="max-w-[1400px] mx-auto px-4 sm:px-8 pt-6 space-y-12">
-        {/* MASTER 3-CHARACTER TURNAROUND SHEET OVERVIEW */}
-        {selectedCharacterFilter === 'ALL' && (
-          <section
-            aria-label="Master Three-Character Model Sheet Overview"
-            className="bg-[#ECEFF3] border border-slate-300 rounded-2xl p-6 space-y-5"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-300 pb-4">
+        {/* Live 3D Scene Stage + Soundboard Buttons Grid */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+          {/* Left: Active 3D Scene Stage with Speech Bubbles & Comic Popups */}
+          <div className="xl:col-span-5 rounded-xl border border-white/15 bg-[#120A06] p-3.5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
               <div>
-                <h2 className="font-display text-xl sm:text-2xl font-bold text-slate-900">
-                  MASTER 3-CHARACTER COMPARATIVE MODEL SHEET (CHARACTER 01 · CHARACTER 02 · CHARACTER 03)
-                </h2>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Unified FightKaro 3D Cartoon Art Direction · Distinct Face Shapes, Silhouettes & Formal Indian Attire · Orthographic Studio Lighting
-                </p>
+                <span
+                  className="px-2 py-0.5 rounded font-mono text-[10px] font-bold uppercase text-slate-950"
+                  style={{ backgroundColor: activeScene.accentColor }}
+                >
+                  ACTIVE 3D SCENE · {activeScene.audioUrl}
+                </span>
+                <h3 className="font-display text-lg font-bold text-white uppercase mt-1">
+                  {activeScene.title}
+                </h3>
+                <p className="text-xs text-slate-400">{activeScene.subtitle}</p>
               </div>
               <button
                 type="button"
-                onClick={() =>
-                  setLightboxImage({
-                    url: MASTER_TRIO_SHEET_URL,
-                    title: 'Master 3-Character 3D Game Character Model Sheet',
-                    subtitle: 'Character 01 (Vikas Mantri) · Character 02 (Yatra Veer) · Character 03 (Rail Samrat)',
-                  })
-                }
-                className="px-3.5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg cursor-pointer whitespace-nowrap"
+                onClick={() => handleTriggerScene(activeScene)}
+                className="px-3 py-2 rounded-lg bg-[#FF9933] hover:bg-amber-400 text-[#120A06] font-mono text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-md"
               >
-                Inspect Master Sheet Fullscreen
+                <Play className="w-3.5 h-3.5 fill-current" />
+                REPLAY SCENE
               </button>
             </div>
 
-            {/* Master Trio AI-Generated 3D Reference Sheet */}
-            <div className="rounded-xl overflow-hidden bg-[#E5E7EB] border border-slate-300">
-              {!imgErrors['master'] ? (
-                <img
-                  src={MASTER_TRIO_SHEET_URL}
-                  alt="Master AAA 3D Game Character Model Sheet featuring three original Indian political parody characters"
-                  referrerPolicy="no-referrer"
-                  onError={() => setImgErrors((p) => ({ ...p, master: true }))}
-                  onClick={() =>
-                    setLightboxImage({
-                      url: MASTER_TRIO_SHEET_URL,
-                      title: 'Master 3-Character 3D Game Character Model Sheet',
-                      subtitle: 'Character 01 · Character 02 · Character 03',
-                    })
-                  }
-                  className={`w-full max-h-[500px] object-contain mx-auto cursor-zoom-in transition-all ${
-                    materialMode === 'zbrush_clay' ? 'grayscale contrast-125 sepia-[.15]' : ''
-                  }`}
-                />
-              ) : (
-                <div className="p-8 text-center text-sm text-slate-600">
-                  Master 3D Orthographic Character Lineup Rendered Below
-                </div>
-              )}
+            {/* Comic Popups Banner */}
+            <div className="flex flex-wrap gap-1.5">
+              {activeScene.scenePopups.map((pop, i) => (
+                <span
+                  key={i}
+                  className="px-2.5 py-1 rounded-md bg-amber-500/20 border border-amber-400/50 text-amber-300 font-display text-xs font-bold uppercase tracking-wider animate-pulse"
+                >
+                  💥 {pop}
+                </span>
+              ))}
             </div>
 
-            {/* 3-Character Silhouette & Proportion Comparison Summary Strip */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">
-              {CHARACTER_MODEL_SHEETS.map((char) => (
+            {/* Live Three.js 3D Character performing the Scene Animation */}
+            <LiveGlbTurntable
+              glbUrl={activeScene.glbUrl}
+              materialMode={materialMode}
+              initialYawDeg={15}
+              initialClip={activeScene.glbClip}
+            />
+
+            {/* Scene Dialogue Speech Bubbles */}
+            <div className="space-y-1.5 bg-black/40 rounded-lg p-3 border border-white/10">
+              <div className="font-mono text-[10px] font-bold uppercase text-amber-400">
+                Scene Dialogue Script & Captions
+              </div>
+              {activeScene.sceneQuotes.map((q, idx) => (
                 <div
-                  key={char.slotNumber}
-                  className="bg-[#E5E7EB] border border-slate-300 rounded-xl p-4 flex items-center justify-between gap-4"
+                  key={idx}
+                  className="px-3 py-1.5 rounded bg-white/10 border-l-4 border-[#FF9933] text-xs sm:text-sm font-medium text-white"
                 >
-                  <div>
-                    <div className="text-xs font-mono font-bold text-slate-700">
-                      {char.slotNumber} · {char.name}
-                    </div>
-                    <div className="text-sm font-semibold text-slate-900 mt-0.5">
-                      {char.silhouetteArchetype}
-                    </div>
-                    <div className="text-xs text-slate-600 font-mono mt-1 tabular-nums">
-                      Height: {char.proportions.totalHeightCm}cm · Ratio: 1:{char.proportions.headToBodyRatio} ·{' '}
-                      {char.sculptSpecs.triCountBudget.toLocaleString()} Tris
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCharacterFilter(char.slotNumber)}
-                    className="px-3 py-1.5 text-xs font-semibold bg-white hover:bg-slate-100 text-slate-900 border border-slate-300 rounded-lg cursor-pointer shrink-0"
-                  >
-                    Focus Sheet
-                  </button>
+                  &ldquo;{q}&rdquo;
                 </div>
               ))}
             </div>
-          </section>
-        )}
+          </div>
 
-        {/* THREE CLEARLY SEPARATED CHARACTER SECTIONS */}
-        {visibleCharacters.map((character) => (
-          <section
-            key={character.slotNumber}
-            id={character.slotNumber.toLowerCase().replace(/\s+/g, '-')}
-            data-testid={`section-${character.fighterId}`}
-            aria-label={`${character.slotNumber}: ${character.name}`}
-            className="bg-[#ECEFF3] border border-slate-300 rounded-2xl p-6 sm:p-8 space-y-6"
-          >
-            {/* Character Section Header */}
-            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-300 pb-5">
-              <div>
-                <div className="text-xs font-mono font-bold tracking-wider text-amber-800">
-                  {character.slotNumber} · ORTHOGRAPHIC 3D SCULPT & EXPRESSION REFERENCE SHEET
-                </div>
-                <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 tracking-tight mt-1">
-                  {character.name} — {character.parodyTitle}
-                </h2>
-                <p className="text-sm text-slate-700 mt-1 max-w-3xl">
-                  {character.personality}
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2.5">
+          {/* Right: 28 Interactive Political Audio & Scene Cards */}
+          <div className="xl:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[640px] overflow-y-auto pr-1">
+            {filteredScenes.map((sceneItem) => {
+              const isSelected = activeScene.id === sceneItem.id;
+              const isPlaying = playingSceneId === sceneItem.id;
+              return (
                 <button
+                  key={sceneItem.id}
                   type="button"
-                  onClick={() =>
-                    setInspectedState({
-                      character,
-                      view: MANDATORY_TEN_VIEWS[0],
-                      customYaw: 0,
-                    })
-                  }
-                  className="px-4 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg cursor-pointer whitespace-nowrap"
+                  data-testid={`scene-audio-btn-${sceneItem.id}`}
+                  onClick={() => handleTriggerScene(sceneItem)}
+                  className={`text-left p-3 rounded-xl border transition flex flex-col justify-between gap-2 cursor-pointer ${
+                    isSelected
+                      ? 'bg-amber-500/20 border-[#FF9933] shadow-lg'
+                      : 'bg-[#221610] border-white/10 hover:border-amber-400/50 hover:bg-[#2B1C14]'
+                  }`}
                 >
-                  Open 360° Orthographic Turntable
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSelectFighterForArena(character.fighterId)}
-                  className="px-4 py-2 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg cursor-pointer whitespace-nowrap"
-                >
-                  Play Fighter in 1v1 Arena
-                </button>
-              </div>
-            </div>
-
-            {/* Character Master 3D Turnaround Plate (AI Studio Sculpt Reference) */}
-            <div className="bg-[#E5E7EB] border border-slate-300 rounded-xl p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700 font-mono">
-                <span>
-                  STUDIO 3D SCULPT PLATE · {character.sculptSpecs.materialShader} ·{' '}
-                  {character.sculptSpecs.triCountBudget.toLocaleString()} Triangles
-                </span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setLightboxImage({
-                      url: character.sheetImageUrl,
-                      title: `${character.slotNumber}: ${character.name} — 3D Turnaround & Expression Sheet`,
-                      subtitle: character.silhouetteArchetype,
-                    })
-                  }
-                  className="underline hover:text-slate-950 cursor-pointer"
-                >
-                  View High-Resolution Plate
-                </button>
-              </div>
-
-              {!imgErrors[character.fighterId] && (
-                <div className="rounded-lg overflow-hidden bg-[#E5E7EB]">
-                  <img
-                    src={character.sheetImageUrl}
-                    alt={`${character.slotNumber} ${character.name} 3D Character Turnaround and Facial Expression Model Sheet`}
-                    referrerPolicy="no-referrer"
-                    onError={() =>
-                      setImgErrors((prev) => ({ ...prev, [character.fighterId]: true }))
-                    }
-                    onClick={() =>
-                      setLightboxImage({
-                        url: character.sheetImageUrl,
-                        title: `${character.slotNumber}: ${character.name}`,
-                        subtitle: character.silhouetteArchetype,
-                      })
-                    }
-                    className={`w-full max-h-[440px] object-contain mx-auto cursor-zoom-in transition-all ${
-                      materialMode === 'zbrush_clay' ? 'grayscale contrast-125 sepia-[.15]' : ''
-                    }`}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* 10 MANDATORY ORTHOGRAPHIC REFERENCE VIEWS GRID (VIEWS 01 TO 10) */}
-            <div>
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                <h3 className="font-display text-lg font-bold text-slate-900 tracking-wide">
-                  10-PANEL ORTHOGRAPHIC 3D TURNAROUND, POSE & FACIAL GEOMETRY BREAKDOWN
-                </h3>
-                <span className="text-xs font-mono text-slate-600 tabular-nums">
-                  Scale: 1:{character.proportions.headToBodyRatio} Heads · Height: {character.proportions.totalHeightCm}cm · Perspective Distortion: 0.0% (Orthographic)
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                {MANDATORY_TEN_VIEWS.map((viewSpec) => (
-                  <div
-                    key={`${character.fighterId}-${viewSpec.id}`}
-                    data-testid={`panel-${character.fighterId}-${viewSpec.id}`}
-                    onClick={() =>
-                      setInspectedState({
-                        character,
-                        view: viewSpec,
-                        customYaw: viewSpec.yawDegrees,
-                      })
-                    }
-                    className="group bg-[#E5E7EB] border border-slate-300 hover:border-slate-500 rounded-xl overflow-hidden flex flex-col justify-between transition-all cursor-pointer"
-                  >
-                    {/* Top View Index Header (Full readable title without truncation) */}
-                    <div className="px-3 py-2 bg-[#DCE0E6] border-b border-slate-300">
-                      <div className="text-xs font-bold text-slate-900 leading-tight">
-                        {viewSpec.title}
-                      </div>
-                      <div className="text-[11px] font-mono text-slate-600 mt-0.5">
-                        {viewSpec.shortLabel}
-                      </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span
+                        className="px-1.5 py-0.5 rounded font-mono text-[9px] font-bold uppercase text-slate-950"
+                        style={{ backgroundColor: sceneItem.accentColor }}
+                      >
+                        {sceneItem.category === 'viral_meme'
+                          ? 'VIRAL MEME AUDIO'
+                          : sceneItem.category === 'character_super'
+                          ? 'FIGHTKARO SUPER'
+                          : 'STAGE HAZARD'}
+                      </span>
+                      <span className="font-mono text-[10px] text-amber-300 flex items-center gap-1">
+                        <Volume2
+                          className={`w-3.5 h-3.5 ${
+                            isPlaying ? 'animate-bounce text-[#FF9933]' : ''
+                          }`}
+                        />
+                        {sceneItem.glbClip}
+                      </span>
                     </div>
-
-                    {/* Uncropped Neutral Grey Orthographic 3D Sculpt Canvas */}
-                    <div className="p-2 flex items-center justify-center bg-[#E5E7EB]">
-                      <OrthographicSculptCanvas
-                        character={character}
-                        view={viewSpec}
-                        materialMode={materialMode}
-                        showGrid={showProportionGrid}
-                        width={225}
-                        height={285}
-                      />
+                    <div className="font-display text-sm sm:text-base font-bold text-white uppercase leading-snug">
+                      {sceneItem.title}
                     </div>
-
-                    {/* Bottom Orthographic Verification Caption */}
-                    <div className="px-3 py-2 bg-[#DCE0E6]/70 border-t border-slate-300 text-[11px] text-slate-700 leading-snug">
-                      {viewSpec.description}
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      {sceneItem.subtitle}
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
 
-            {/* Accurate Clothing, Hairstyle, Hands, Feet & Accessories Specification Table */}
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 pt-2 border-t border-slate-300 text-xs text-slate-700">
-              <div className="bg-[#E5E7EB] p-3.5 rounded-xl border border-slate-300">
-                <div className="font-mono font-bold text-slate-900 mb-1">
-                  01. FACE & HAIRSTYLE
-                </div>
-                <p className="leading-relaxed">
-                  {character.anatomyAndGarments.hairstyle} {character.anatomyAndGarments.facialFeatures}
-                </p>
-              </div>
-              <div className="bg-[#E5E7EB] p-3.5 rounded-xl border border-slate-300">
-                <div className="font-mono font-bold text-slate-900 mb-1">
-                  02. FRONT GARMENT SPEC
-                </div>
-                <p className="leading-relaxed">{character.anatomyAndGarments.frontDetails}</p>
-              </div>
-              <div className="bg-[#E5E7EB] p-3.5 rounded-xl border border-slate-300">
-                <div className="font-mono font-bold text-slate-900 mb-1">
-                  03. SIDE PROFILE SPEC
-                </div>
-                <p className="leading-relaxed">{character.anatomyAndGarments.sideDetails}</p>
-              </div>
-              <div className="bg-[#E5E7EB] p-3.5 rounded-xl border border-slate-300">
-                <div className="font-mono font-bold text-slate-900 mb-1">
-                  04. BACK VIEW SPEC
-                </div>
-                <p className="leading-relaxed">{character.anatomyAndGarments.backDetails}</p>
-              </div>
-              <div className="bg-[#E5E7EB] p-3.5 rounded-xl border border-slate-300">
-                <div className="font-mono font-bold text-slate-900 mb-1">
-                  05. HANDS, FEET & PROPS
-                </div>
-                <p className="leading-relaxed">{character.anatomyAndGarments.handsAndFeet}</p>
-              </div>
-            </div>
-          </section>
+                  <div className="space-y-1.5 pt-1 border-t border-white/10 w-full">
+                    <div className="text-[11px] italic text-amber-200/90 truncate">
+                      &ldquo;{sceneItem.sceneQuotes[0]}&rdquo;
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {sceneItem.scenePopups.slice(0, 3).map((p, i) => (
+                        <span
+                          key={i}
+                          className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 font-mono text-[9px] font-bold text-slate-200"
+                        >
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* THREE SEPARATED CHARACTER MODEL SHEET SECTIONS (Neutral Light Grey #E5E7EB Studio Sheet) */}
+      <div className="space-y-8">
+        {activeThreeCharacters.map((character, idx) => (
+          <CharacterModelSheetSection
+            key={`${character.slotNumber}-${character.fighterId}`}
+            character={character}
+            slotIndex={idx}
+            materialMode={materialMode}
+            showGridOverlay={showGridOverlay}
+            onChangeSlotFighter={handleSlotChange}
+            onInspectModal={(c, v, snap) =>
+              setModalData({ character: c, view: v, snapshotUrl: snap })
+            }
+          />
         ))}
       </div>
 
-      {/* INTERACTIVE 360° ORTHOGRAPHIC 3D TURNTABLE & EXPRESSION INSPECTOR MODAL */}
-      {inspectedState && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="360 Degree Orthographic 3D Sculpt Inspector"
-          className="fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-4"
-        >
-          <div className="bg-[#ECEFF3] text-slate-900 border border-slate-400 rounded-2xl max-w-4xl w-full p-6 space-y-5 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-300 pb-4">
+      {/* OFFICIAL FIGHT KARO CHARACTERS ROSTER & MBAPU BOSS GUIDE (Matching https://fightfightkaro.com/characters/) */}
+      <section className="rounded-xl border border-white/15 bg-[#160E0A] p-5 sm:p-6 space-y-6 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-4">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-amber-500/15 border border-amber-400/30 text-amber-300 font-mono text-[11px] font-bold uppercase mb-2">
+              <Users className="w-3.5 h-3.5" />
+              Fight Karo Characters Roster & Guide
+            </div>
+            <h2 className="font-display text-2xl font-bold text-white uppercase tracking-wide">
+              Fight Karo Characters — Roster, Teams, Supers & Boss Mbapu
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-3xl">
+              Playable fighters, teams, super moves, and how to unlock and defeat{' '}
+              <strong className="text-amber-300">Mbapu</strong> (Final Boss of{' '}
+              <em>Shanti Akhada</em>) via KO or the peaceful{' '}
+              <strong className="text-emerald-300">&quot;SHANTI KI JEET&quot;</strong>{' '}
+              route.
+            </p>
+          </div>
+
+          {/* Interactive Filter & Sort Controls */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5 bg-black/40 border border-white/15 rounded-lg px-3 py-1.5">
+              <Filter className="w-3.5 h-3.5 text-amber-400" />
+              <span className="font-mono text-xs text-slate-400">Filter:</span>
+              {(['all', 'boss', 'selectable'] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setRosterFilter(f)}
+                  className={`px-2 py-0.5 rounded font-mono text-xs font-bold capitalize transition ${
+                    rosterFilter === f
+                      ? 'bg-[#FF9933] text-[#120A06]'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+
+            <label className="flex items-center gap-1.5 bg-black/40 border border-white/15 rounded-lg px-3 py-1.5 font-mono text-xs text-slate-300">
+              <span className="text-slate-400">Sort:</span>
+              <select
+                value={rosterSort}
+                onChange={(e) =>
+                  setRosterSort(
+                    e.target.value as 'game_order' | 'name_az' | 'status_group'
+                  )
+                }
+                className="bg-transparent font-bold text-white focus:outline-none cursor-pointer"
+              >
+                <option value="game_order" className="bg-slate-900">
+                  Game order
+                </option>
+                <option value="name_az" className="bg-slate-900">
+                  Name A–Z
+                </option>
+                <option value="status_group" className="bg-slate-900">
+                  Selectable, boss, random
+                </option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* Character Portrait Cards Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+          {filteredAndSortedRoster.map((entry) => (
+            <div
+              key={entry.id}
+              className="rounded-xl border border-white/15 bg-[#211510] p-3 flex flex-col justify-between gap-2 hover:border-amber-400/60 transition"
+            >
               <div>
-                <div className="text-xs font-mono font-bold text-amber-800">
-                  {inspectedState.character.slotNumber} · 360° ORTHOGRAPHIC SCULPT INSPECTOR
+                <div className="relative aspect-square rounded-lg overflow-hidden bg-black/50 border border-white/10 mb-2">
+                  <img
+                    src={entry.portraitUrl}
+                    alt={entry.name}
+                    className="w-full h-full object-cover"
+                  />
+                  <span
+                    className={`absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase ${
+                      entry.status === 'Boss'
+                        ? 'bg-amber-500 text-slate-950'
+                        : entry.status === 'Special'
+                        ? 'bg-purple-500 text-white'
+                        : 'bg-emerald-500/90 text-slate-950'
+                    }`}
+                  >
+                    {entry.status}
+                  </span>
                 </div>
-                <h3 className="font-display text-2xl font-bold text-slate-900">
-                  {inspectedState.character.name} — {inspectedState.view.title}
-                </h3>
+                <div className="font-display text-base font-bold text-white uppercase">
+                  {entry.name}
+                </div>
+                <div className="text-[11px] font-mono text-amber-300/90">
+                  {entry.team}
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                  Super: <strong className="text-slate-200">{entry.superMove}</strong>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5 pt-1">
+                {entry.id !== 'random' && (
+                  <button
+                    type="button"
+                    onClick={() => sound.playCharacterSuperVoice(entry.id)}
+                    className="w-full py-1 px-2 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-mono text-[10px] font-bold transition flex items-center justify-center gap-1"
+                  >
+                    <Volume2 className="w-3 h-3" />
+                    Play Voice (.mp3)
+                  </button>
+                )}
+                {entry.glbUrl && ALL_FIGHTKARO_CHARACTER_SPECS[entry.id] && (
+                  <button
+                    type="button"
+                    onClick={() => handleLoadIntoSheet(entry.id)}
+                    className="w-full py-1 px-2 rounded bg-white/10 hover:bg-[#FF9933] hover:text-[#120A06] text-white font-mono text-[10px] font-bold transition flex items-center justify-center gap-1"
+                  >
+                    <Eye className="w-3 h-3" />
+                    Load 3D Sheet
+                  </button>
+                )}
+                {entry.id !== 'random' && onSelectFighterForMatch && (
+                  <button
+                    type="button"
+                    onClick={() => onSelectFighterForMatch(entry.id)}
+                    className="w-full py-1 px-2 rounded bg-amber-500/20 hover:bg-amber-500 hover:text-slate-950 text-amber-300 border border-amber-500/30 font-mono text-[10px] font-bold transition flex items-center justify-center gap-1"
+                  >
+                    <Swords className="w-3 h-3" />
+                    Pick Fighter
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Official Fight Karo Roster Table */}
+        <div className="overflow-x-auto rounded-lg border border-white/10">
+          <table className="w-full text-left border-collapse text-xs sm:text-sm">
+            <thead>
+              <tr className="bg-black/50 text-amber-300 font-mono text-[11px] uppercase border-b border-white/10">
+                <th className="py-2.5 px-3">Fighter</th>
+                <th className="py-2.5 px-3">Team</th>
+                <th className="py-2.5 px-3">Super Move</th>
+                <th className="py-2.5 px-3">How You Get Them</th>
+                <th className="py-2.5 px-3">Status</th>
+                <th className="py-2.5 px-3">Theme & Play Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/10 text-slate-200">
+              {filteredAndSortedRoster.map((entry) => (
+                <tr key={entry.id} className="hover:bg-white/5">
+                  <td className="py-2.5 px-3 font-bold flex items-center gap-2.5">
+                    <img
+                      src={entry.portraitUrl}
+                      alt={entry.name}
+                      className="w-8 h-8 rounded object-cover border border-white/20 shrink-0"
+                    />
+                    <span>{entry.name}</span>
+                  </td>
+                  <td className="py-2.5 px-3 font-mono text-xs text-amber-200">
+                    {entry.team}
+                  </td>
+                  <td className="py-2.5 px-3 font-mono text-xs font-bold text-white">
+                    {entry.superMove}
+                  </td>
+                  <td className="py-2.5 px-3 text-xs text-slate-300">
+                    {entry.unlockMethod}
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <span
+                      className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold uppercase ${
+                        entry.status === 'Boss'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40'
+                          : entry.status === 'Special'
+                          ? 'bg-purple-500/20 text-purple-300 border border-purple-400/40'
+                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40'
+                      }`}
+                    >
+                      {entry.status}
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-3 text-xs text-slate-300">
+                    {entry.themeAndNotes}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* How to Face Mbapu & Peace Route Statistics Table */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-2">
+          <div className="lg:col-span-6 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2.5">
+            <div className="flex items-center gap-2 text-amber-300 font-mono text-xs font-bold uppercase">
+              <ShieldAlert className="w-4 h-4" />
+              How to Face Mbapu (Shanti Akhada Final Boss)
+            </div>
+            <ul className="space-y-2 text-xs sm:text-sm text-slate-200 list-disc list-inside leading-relaxed">
+              <li>
+                <strong>Unlock Requirement:</strong> Play <strong>1P vs CPU</strong> and win{' '}
+                <strong>3 matches in a row</strong>. After the third victory, the game triggers the boss intro and loads{' '}
+                <strong>Shanti Akhada</strong> against <strong>Mbapu</strong>.
+              </li>
+              <li>
+                <strong>Standard Route (KO):</strong> Drain Mbapu&apos;s{' '}
+                <strong>200 HP</strong> bar before the timer runs out. Be careful: Mbapu regenerates{' '}
+                <strong>2.5 HP/s</strong> if you do not hit him for 3 seconds, and his super{' '}
+                <strong>MANCH CHHODO</strong> deals 40% max HP damage!
+              </li>
+              <li>
+                <strong>Peace Route (&quot;SHANTI KI JEET&quot;):</strong> Never press punch, kick, or super. Stay within close range for{' '}
+                <strong>20 seconds</strong> and block at least{' '}
+                <strong>5 attacks</strong> to win peacefully!
+              </li>
+            </ul>
+          </div>
+
+          <div className="lg:col-span-6 rounded-xl border border-white/10 bg-black/30 p-4">
+            <div className="flex items-center gap-2 text-emerald-300 font-mono text-xs font-bold uppercase mb-2.5">
+              <Sparkles className="w-4 h-4" />
+              Mbapu Boss Rules & Peace Thresholds
+            </div>
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-white/10 text-slate-400 font-mono uppercase">
+                  <th className="py-1.5 pr-3">Rule</th>
+                  <th className="py-1.5">Value</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/10 text-slate-200">
+                {MBAPU_BOSS_STATS_TABLE.map((row) => (
+                  <tr key={row.rule}>
+                    <td className="py-2 pr-3 font-mono font-bold text-amber-200">
+                      {row.rule}
+                    </td>
+                    <td className="py-2 text-slate-100">{row.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      {/* High-Resolution 3D Orthographic View Modal */}
+      {modalData && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setModalData(null)}
+        >
+          <div
+            className="max-w-3xl w-full rounded-xl bg-[#E5E7EB] text-slate-900 border-2 border-slate-500 overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between">
+              <div>
+                <div className="font-mono text-[10px] text-amber-400 uppercase">
+                  {modalData.character.slotNumber} · {modalData.character.name} ({modalData.character.glbUrl})
+                </div>
+                <div className="font-display text-lg font-bold uppercase">
+                  {modalData.view.title} — {modalData.view.shortLabel}
+                </div>
               </div>
               <button
                 type="button"
-                onClick={() => setInspectedState(null)}
-                className="px-3.5 py-1.5 text-xs font-mono font-bold bg-slate-900 text-white rounded-lg cursor-pointer"
+                onClick={() => setModalData(null)}
+                className="px-3 py-1 rounded bg-white/10 hover:bg-white/20 font-mono text-xs font-bold"
               >
                 CLOSE [ESC]
               </button>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
-              <div className="md:col-span-6 bg-[#E5E7EB] border border-slate-300 rounded-xl p-4 flex flex-col items-center">
-                <OrthographicSculptCanvas
-                  character={inspectedState.character}
-                  view={inspectedState.view}
-                  materialMode={materialMode}
-                  showGrid={showProportionGrid}
-                  customYaw={inspectedState.customYaw}
-                  width={300}
-                  height={380}
-                />
-                <div className="mt-2 text-xs font-mono text-slate-700 tabular-nums">
-                  Orthographic Yaw Angle: {inspectedState.customYaw}° · Zero Perspective Distortion
-                </div>
-              </div>
-
-              <div className="md:col-span-6 space-y-4">
-                <div>
-                  <label
-                    htmlFor="ortho-yaw-slider"
-                    className="block text-xs font-mono font-bold text-slate-800 mb-1"
-                  >
-                    SCRUB ORTHOGRAPHIC TURNAROUND ANGLE (0° – 360°):
-                  </label>
-                  <input
-                    id="ortho-yaw-slider"
-                    type="range"
-                    min={0}
-                    max={360}
-                    value={inspectedState.customYaw}
-                    onChange={(e) =>
-                      setInspectedState((prev) =>
-                        prev ? { ...prev, customYaw: Number(e.target.value) } : null
-                      )
-                    }
-                    className="w-full accent-slate-900 cursor-pointer"
+            <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-4 items-center bg-[#E5E7EB]">
+              <div className="md:col-span-7 bg-[#E5E7EB] border border-slate-300 rounded-lg overflow-hidden flex items-center justify-center">
+                {modalData.snapshotUrl && (
+                  <img
+                    src={modalData.snapshotUrl}
+                    alt={modalData.view.title}
+                    className="max-h-[460px] w-auto object-contain"
                   />
-                </div>
-
-                <div>
-                  <div className="text-xs font-mono font-bold text-slate-800 mb-2">
-                    SWITCH AMONG ALL 10 REQUIRED VIEWS & EXPRESSIONS:
+                )}
+              </div>
+              <div className="md:col-span-5 space-y-3 text-xs text-slate-800">
+                <div className="p-3 rounded bg-white border border-slate-300 space-y-1.5">
+                  <div className="font-mono text-[10px] font-bold uppercase text-slate-500">
+                    Orthographic Camera Specification
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {MANDATORY_TEN_VIEWS.map((v) => (
-                      <button
-                        key={v.id}
-                        type="button"
-                        onClick={() =>
-                          setInspectedState((prev) =>
-                            prev ? { ...prev, view: v, customYaw: v.yawDegrees } : null
-                          )
-                        }
-                        className={`px-2.5 py-1.5 text-left text-xs font-medium rounded-lg border cursor-pointer truncate ${
-                          inspectedState.view.id === v.id
-                            ? 'bg-slate-900 text-white border-slate-900'
-                            : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-100'
-                        }`}
-                      >
-                        {v.title}
-                      </button>
-                    ))}
+                  <p className="font-semibold">{modalData.view.description}</p>
+                  <div className="font-mono text-[11px] text-slate-700 pt-1">
+                    <div>Camera: {modalData.view.cameraType}</div>
+                    <div>Turntable Yaw: {modalData.view.yawDegrees}°</div>
+                    <div>Safe Margin: {Math.round(modalData.view.cropMarginRatio * 100)}%</div>
                   </div>
                 </div>
-
-                <div className="p-3.5 bg-[#E5E7EB] rounded-xl border border-slate-300 text-xs space-y-1">
-                  <div className="font-mono font-bold text-slate-900">
-                    ACCESSORIES & GEOMETRY CHECK:
-                  </div>
-                  <div className="text-slate-700">
-                    {inspectedState.character.anatomyAndGarments.accessories.join(' · ')}
-                  </div>
-                </div>
+                <LiveGlbTurntable
+                  glbUrl={modalData.character.glbUrl}
+                  materialMode={materialMode}
+                  initialYawDeg={modalData.view.yawDegrees}
+                  initialClip={modalData.view.preferredClips[0] || 'guardbounce'}
+                />
               </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* HIGH-RESOLUTION MODEL SHEET LIGHTBOX MODAL */}
-      {lightboxImage && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="High Resolution 3D Model Sheet Viewer"
-          onClick={() => setLightboxImage(null)}
-          className="fixed inset-0 z-50 bg-slate-950/85 flex items-center justify-center p-4 cursor-zoom-out"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-[#E5E7EB] text-slate-900 border border-slate-400 rounded-2xl max-w-6xl w-full p-5 space-y-4 cursor-default"
-          >
-            <div className="flex items-center justify-between border-b border-slate-300 pb-3">
-              <div>
-                <h3 className="font-display text-xl font-bold text-slate-900">
-                  {lightboxImage.title}
-                </h3>
-                <p className="text-xs text-slate-600 font-mono">{lightboxImage.subtitle}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setLightboxImage(null)}
-                className="px-3.5 py-1.5 text-xs font-mono font-bold bg-slate-900 text-white rounded-lg cursor-pointer"
-              >
-                CLOSE
-              </button>
-            </div>
-            <img
-              src={lightboxImage.url}
-              alt={lightboxImage.title}
-              referrerPolicy="no-referrer"
-              className="w-full max-h-[78vh] object-contain mx-auto rounded-lg"
-            />
           </div>
         </div>
       )}

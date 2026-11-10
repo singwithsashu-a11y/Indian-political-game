@@ -285,13 +285,14 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = ({
           actor.action = 'BUDGET_STRIKE';
           actor.actionTimer = 28;
           actor.hitChecked = false;
-          sound.playSuper();
+          sound.playBudgetAudit();
+          addPopup('📕 BUDGET PESH HAI! GST 28%!', actor.x, actor.y - 145, '#FACC15');
           setHudState((prev) => ({
             ...prev,
-            superBanner: `📕 NIRMALA'S RED LEDGER AUDIT!`,
-            godiLine: `HISTORIC BUDGET INTERVENTION! Tax slab shockwave deployed in the House!`,
+            superBanner: `📕 NIRMALA'S RED LEDGER AUDIT · AB LAGEGA TAX!`,
+            godiLine: `HISTORIC BUDGET INTERVENTION! "Sabka hissa banta hai, Bapu!" Tax slab shockwave deployed!`,
           }));
-          setTimeout(() => setHudState((prev) => ({ ...prev, superBanner: '' })), 1400);
+          setTimeout(() => setHudState((prev) => ({ ...prev, superBanner: '' })), 1800);
         }
         return;
       }
@@ -302,13 +303,14 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = ({
           actor.action = 'SUPER';
           actor.actionTimer = 34;
           actor.hitChecked = false;
-          sound.playSuper();
+          sound.playSuper(actor.config.id);
+          addPopup(`${actor.config.superName}!`, actor.x, actor.y - 150, actor.config.accent);
           setHudState((prev) => ({
             ...prev,
             superBanner: `${actor.config.name}: ${actor.config.superName}!`,
-            godiLine: `UNBELIEVABLE! ${actor.config.name} unleashes ${actor.config.superName}!`,
+            godiLine: `WAAH KYA SCENE HAI! ${actor.config.name} unleashes ${actor.config.superName}!`,
           }));
-          setTimeout(() => setHudState((prev) => ({ ...prev, superBanner: '' })), 1400);
+          setTimeout(() => setHudState((prev) => ({ ...prev, superBanner: '' })), 1800);
         }
         return;
       }
@@ -396,6 +398,24 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = ({
       else if (e.code === 'KeyI') triggerAttack(controlledSlot, 'GRAB');
       else if (e.code === 'KeyL' || e.code === 'Space') triggerAttack(controlledSlot, 'SUPER');
       else if (e.code === 'KeyB') triggerAttack(controlledSlot, 'BUDGET');
+      else if (e.code === 'KeyV') {
+        const myActor = controlledSlot === 'p1' ? simRef.current.p1 : simRef.current.p2;
+        sound.playFighterMemeClip(myActor.config.id);
+        addPopup('WAAH KYA SCENE HAI!', myActor.x, myActor.y - 140, myActor.config.accent);
+      } else if (e.code === 'KeyH') {
+        const kind = stage.id === 'road' ? 'sabzi' : stage.id === 'jantar' ? 'sutli' : 'cow';
+        sound.playStageHazard(kind);
+        addPopup(
+          kind === 'sabzi'
+            ? '⚠ SABZI WALA: ALOO LE LO!'
+            : kind === 'cow'
+            ? '⚠ COW CROSSING: SAB RUK JAO!'
+            : '⚠ SUTLI BOMB! 🧨',
+          STAGE_WIDTH / 2,
+          GROUND_Y - 160,
+          '#FACC15'
+        );
+      }
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -405,6 +425,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = ({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     sound.startArenaBgm();
+    sound.playRoundStart(1, Boolean(p2Config.isBoss));
 
     return () => {
       window.removeEventListener('keydown', onKeyDown);
@@ -1041,7 +1062,6 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = ({
             if (sim.p1.hp <= 0 || sim.p2.hp <= 0 || sim.roundTimerFrames <= 0 || ahinsaWon) {
               sim.phase = 'ROUND_END';
               sim.phaseTimer = 110;
-              sound.playKO();
 
               let p1WonRound = false;
               if (ahinsaWon) {
@@ -1063,6 +1083,9 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = ({
                   sim.p2.roundsWon += 1;
                 }
               }
+
+              const roundWinnerConfig = p1WonRound ? sim.p1.config : sim.p2.config;
+              sound.playKO(roundWinnerConfig.id, p1WonRound);
 
               sim.p1.action = p1WonRound ? 'VICTORY' : 'KNOCKDOWN';
               sim.p2.action = p1WonRound ? 'KNOCKDOWN' : 'VICTORY';
